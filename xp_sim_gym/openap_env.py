@@ -54,6 +54,7 @@ class OpenAPNavEnv(gym.Env):
         self.lookahead_count = lookahead_count
         self.nominal_route = nominal_route if nominal_route else []
         self.current_waypoint_idx = 0
+        self.stage = 1 # Default to stage 1 (Easy)
         
         obs_dim = 6 + 4 + (4 * self.lookahead_count)
         
@@ -82,37 +83,42 @@ class OpenAPNavEnv(gym.Env):
         
         self.steps_taken = 0
         
+    def set_pretraining_stage(self, stage):
+        """Règle le niveau de difficulté de l'environnement pour le pré-entraînement"""
+        if stage not in [1, 2, 3]:
+            print(f"Warning: Etape {stage} invalide.")
+            return
+
+        self.stage = stage
+        print(f"OpenAPNavEnv switched to Stage {stage}")
+        
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.steps_taken = 0
         self.current_waypoint_idx = 0
         
-        # Initialize state based on first waypoint or default
+        if not self.nominal_route or self.stage > 0:
+             self.nominal_route = self._generate_route_for_stage()
+
+        # Initialize state based on first waypoint
         if self.nominal_route:
             start_node = self.nominal_route[0]
             self.lat = start_node.get('lat', 0.0)
             self.lon = start_node.get('lon', 0.0)
-            self.alt_m = start_node.get('alt', 10058.4) # Default to ~33000 ft if not specified
+            self.alt_m = start_node.get('alt', 10058.4) 
             
-            # Set initial heading towards 2nd waypoint if available
             if len(self.nominal_route) > 1:
                 next_node = self.nominal_route[1]
                 self.heading_mag = GeoUtils.bearing(self.lat, self.lon, next_node['lat'], next_node['lon'])
             else:
                 self.heading_mag = 0.0
-        else:
-            self.lat = 48.0
-            self.lon = 2.0
-            self.alt_m = 10058.4
-            self.heading_mag = 0.0
-            
-        self.current_fuel_kg = 15000.0 # Standard initial fuel
-        self.tas_ms = 230.0 # Cruise speed
-        self.gs_ms = self.tas_ms # Will be updated with wind
         
-        # Simple wind init (can be randomized)
-        self.wind_u = 0.0
-        self.wind_v = 0.0
+        self.current_fuel_kg = 15000.0 
+        self.tas_ms = 230.0 
+        self.gs_ms = self.tas_ms 
+        
+        # Wind initialization based on Stage
+        self._init_wind()
         
         return self._get_observation(), {}
 
@@ -180,7 +186,6 @@ class OpenAPNavEnv(gym.Env):
             mass=self.current_fuel_kg + 40000, # Approximate ZFW + Fuel. OpenAP needs Total Mass.
             tas=self.tas_ms / 0.514444, # to kts
             alt=self.alt_m / 0.3048, # to ft
-            path_angle=0
         )
         
         fuel_consumed = ff_kg_s * duration_sec
@@ -238,6 +243,92 @@ class OpenAPNavEnv(gym.Env):
         
     def _sample_wind_at(self, lat, lon, alt):
         return self.wind_u, self.wind_v
+
+    def _init_wind(self):
+        """Initialize wind based on current stage."""
+        if self.stage == 1:
+            # Stage 1: Zero wind
+            self.wind_u = 0.0
+            self.wind_v = 0.0
+        elif self.stage == 2:
+            # Stage 2: Constant moderate wind (random direction)
+            spd = np.random.uniform(10, 30) # kts
+            bng = np.random.uniform(0, 360)
+            
+            # Convert to U/V (assuming MET convention 'wind from')
+            # But we want flow components for GS calc.
+            # u = -spd * sin(rad)
+            # v = -spd * cos(rad)
+            rad = math.radians(bng)
+            self.wind_u = -spd * math.sin(rad) * 0.514444 # to m/s
+            self.wind_v = -spd * math.cos(rad) * 0.514444
+            
+        elif self.stage == 3:
+            # Stage 3: Stronger/Variable wind (randomized per episode)
+            spd = np.random.uniform(30, 80) # Stronger
+            bng = np.random.uniform(0, 360)
+            rad = math.radians(bng)
+            self.wind_u = -spd * math.sin(rad) * 0.514444
+            self.wind_v = -spd * math.cos(rad) * 0.514444
+            
+    def _generate_route_for_stage(self):
+        """Generates a random route based on difficulty stage."""
+        # Base location (Paris roughly)
+        lat_0, lon_0 = 48.0, 2.0
+        
+        route = []
+        route.append({'lat': lat_0, 'lon': lon_0, 'alt': 33000})
+        
+        if self.stage == 1:
+            # Short straight route: 1 segment, ~50-100 NM
+            dist_nm = np.random.uniform(50, 100)
+            bearing = np.random.uniform(0, 360)
+            
+            # Rough calc for next point
+            # 1 deg lat ~ 60 NM
+            d_lat = dist_nm / 60.0 * math.cos(math.radians(bearing))
+            d_lon = dist_nm / 60.0 * math.sin(math.radians(bearing)) / math.cos(math.radians(lat_0))
+            
+            route.append({'lat': lat_0 + d_lat, 'lon': lon_0 + d_lon, 'alt': 33000})
+            
+        elif self.stage == 2:
+            # Medium route: 2-3 segments, ~200 NM total
+            num_segments = np.random.randint(2, 4)
+            current_lat, current_lon = lat_0, lon_0
+            current_bng = np.random.uniform(0, 360)
+            
+            for _ in range(num_segments):
+                dist_nm = np.random.uniform(50, 80)
+                # Small turn
+                turn = np.random.uniform(-30, 30)
+                current_bng = (current_bng + turn) % 360
+                
+                d_lat = dist_nm / 60.0 * math.cos(math.radians(current_bng))
+                d_lon = dist_nm / 60.0 * math.sin(math.radians(current_bng)) / math.cos(math.radians(current_lat))
+                
+                current_lat += d_lat
+                current_lon += d_lon
+                route.append({'lat': current_lat, 'lon': current_lon, 'alt': 33000})
+                
+        elif self.stage == 3:
+             # Long/Complex route: 4-6 segments, ~400-600 NM
+            num_segments = np.random.randint(4, 7)
+            current_lat, current_lon = lat_0, lon_0
+            current_bng = np.random.uniform(0, 360)
+            
+            for _ in range(num_segments):
+                dist_nm = np.random.uniform(60, 100)
+                turn = np.random.uniform(-60, 60) # Sharper turns
+                current_bng = (current_bng + turn) % 360
+                
+                d_lat = dist_nm / 60.0 * math.cos(math.radians(current_bng))
+                d_lon = dist_nm / 60.0 * math.sin(math.radians(current_bng)) / math.cos(math.radians(current_lat))
+                
+                current_lat += d_lat
+                current_lon += d_lon
+                route.append({'lat': current_lat, 'lon': current_lon, 'alt': 33000})
+                
+        return route
 
     def _get_observation(self):
         # reuse logic from env.py but adapted for local vars
