@@ -6,6 +6,7 @@ dist/
 wheels/
 *.egg-info
 
-# Virtual environments
+# Virtual environments + model artifacts
 .venv
 logs/
+*.zip

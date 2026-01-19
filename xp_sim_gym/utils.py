@@ -29,11 +29,22 @@ class GeoUtils:
     def cross_track_error(lat_pos, lon_pos, lat_start, lon_start, lat_end, lon_end):
         """
         Returns Cross Track Error (NM). Positive = Right of track, Negative = Left.
-        Approximated using X-Track distance formula on sphere (or flat for short dist).
         """
-        dist_13 = GeoUtils.haversine_dist(lat_start, lon_start, lat_pos, lon_pos) # NM
+        dist_13 = GeoUtils.haversine_dist(lat_start, lon_start, lat_pos, lon_pos)
         brg_13 = GeoUtils.bearing(lat_start, lon_start, lat_pos, lon_pos)
         brg_12 = GeoUtils.bearing(lat_start, lon_start, lat_end, lon_end)
         
         rel_brg = math.radians(brg_13 - brg_12)
         return dist_13 * math.sin(rel_brg)
+
+    @staticmethod
+    def along_track_distance(lat_pos, lon_pos, lat_start, lon_start, lat_end, lon_end):
+        """
+        Returns Along Track Distance (NM) from start to the projection of pos on segment.
+        """
+        dist_13 = GeoUtils.haversine_dist(lat_start, lon_start, lat_pos, lon_pos)
+        brg_13 = GeoUtils.bearing(lat_start, lon_start, lat_pos, lon_pos)
+        brg_12 = GeoUtils.bearing(lat_start, lon_start, lat_end, lon_end)
+        
+        rel_brg = math.radians(brg_13 - brg_12)
+        return dist_13 * math.cos(rel_brg)

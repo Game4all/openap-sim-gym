@@ -18,8 +18,8 @@ class CurriculumCallback(BaseCallback):
         self.stage = 1
         # Define stage transitions (timestep thresholds)
         self.thresholds = {
-            1: 50_000,   # Switch to Stage 2 after 50k steps
-            2: 150_000,  # Switch to Stage 3 after 150k steps (Total)
+            1: 100_000,   # Switch to Stage 2 after 50k steps
+            2: 200_000,  # Switch to Stage 3 after 150k steps (Total)
         }
 
     def _on_step(self) -> bool:
@@ -79,7 +79,7 @@ def main():
 
     # Train
     print("Starting Pretraining with Curriculum...")
-    total_timesteps = 300000
+    total_timesteps = 300_000
     model.learn(total_timesteps=total_timesteps, callback=curr_callback)
 
     # Save Model

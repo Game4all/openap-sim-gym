@@ -83,7 +83,8 @@ class OpenAPNavEnv(gym.Env):
         self.steps_taken = 0
         self.current_waypoint_idx = 0
 
-        if not self.nominal_route or self.stage > 0:
+        # Only generate a route if none was provided in config
+        if not self.nominal_route:
             self.nominal_route = self._generate_route_for_stage()
 
         if self.nominal_route:
@@ -127,6 +128,13 @@ class OpenAPNavEnv(gym.Env):
         return self._get_observation(), {}
 
     def step(self, action):
+        # Capture state before simulation for progression reward
+        prev_dist_to_wp = 0.0
+        if self.current_waypoint_idx < len(self.nominal_route):
+            target_wp = self.nominal_route[self.current_waypoint_idx]
+            prev_dist_to_wp = GeoUtils.haversine_dist(
+                self.lat, self.lon, target_wp['lat'], target_wp['lon'])
+
         # action is in [-1, 1], map to physical ranges
         # heading offset mapping: [-1, 1] -> [MIN_HEADING_OFFSET, MAX_HEADING_OFFSET]
         heading_offset_deg = MIN_HEADING_OFFSET + \
@@ -150,11 +158,8 @@ class OpenAPNavEnv(gym.Env):
         tas_e = self.tas_ms * math.sin(heading_rad)
 
         # Ground Speed vector
-        # wind_v is North component? XPlane uses U=East, V=North usually?
         gs_n = tas_n + self.wind_v
-
         gs_e = tas_e + self.wind_u
-        gs_n = tas_n + self.wind_v
 
         self.gs_ms = math.sqrt(gs_e**2 + gs_n**2)
         track_rad = math.atan2(gs_e, gs_n)
@@ -176,9 +181,7 @@ class OpenAPNavEnv(gym.Env):
         self.heading_mag = target_heading
 
         # 3. Fuel Consumption Simulation (OpenAP)
-        # enroute(mass, tas, alt, path_angle) -> fuel flow in kg/s
         ff_kg_s = self.fuel_flow_model.enroute(
-            # Approximate ZFW + Fuel. OpenAP needs Total Mass.
             mass=self.current_fuel_kg + 40000,
             tas=self.tas_ms / 0.514444,  # to kts
             alt=self.alt_m / 0.3048,  # to ft
@@ -192,7 +195,18 @@ class OpenAPNavEnv(gym.Env):
 
         # 5. Reward Calculation and Status
         xte_nm = self._calculate_xte()
-        reward = self._compute_reward(fuel_consumed, duration_min, xte_nm)
+
+        # Calculate Progression (Reward for reducing distance to next waypoint)
+        new_dist_to_wp = 0.0
+        if self.current_waypoint_idx < len(self.nominal_route):
+            target_wp = self.nominal_route[self.current_waypoint_idx]
+            new_dist_to_wp = GeoUtils.haversine_dist(
+                self.lat, self.lon, target_wp['lat'], target_wp['lon'])
+
+        progression_nm = prev_dist_to_wp - new_dist_to_wp
+
+        reward = self._compute_reward(
+            fuel_consumed, duration_min, xte_nm, progression_nm)
 
         terminated = False
         truncated = False
@@ -207,25 +221,24 @@ class OpenAPNavEnv(gym.Env):
 
         return self._get_observation(), reward, terminated, truncated, {}
 
-    def _compute_reward(self, fuel_consumed, duration_min, xte_nm):
+    def _compute_reward(self, fuel_consumed, duration_min, xte_nm, progression_nm):
         """
-        Calcule la récompense (reward) pour l'étape actuelle.
-        
+        Calcule la récompense (reward) pour l'étape actuelle en considérant XTE et ATE.
+
         Args:
             fuel_consumed (float): Carburant consommé pendant l'étape (kg).
             duration_min (float): Durée de l'étape (minutes).
             xte_nm (float): Erreur latérale / Cross-track error (NM).
-            
+            progression_nm (float): Progression longitudinale / ATE factor (NM).
+
         Returns:
             float: La récompense calculée.
-        ""
         """
-        # a. Récompense de progression : réduction de la distance vers le point de passage
-        # (Logique de progression future)
-        # target_wp = self.nominal_route[min(self.current_waypoint_idx, len(self.nominal_route)-1)]
-        # dist_to_wpt_now = GeoUtils.haversine_dist(self.lat, self.lon, target_wp['lat'], target_wp['lon'])
-
         reward = 0.0
+
+        # a. Récompense de progression (Facteur ATE/ATD)
+        # On récompense le fait de s'être rapproché du prochain point de passage
+        reward += 0.5 * progression_nm
 
         # b. Pénalité de carburant (Échelle : 1 kg -> -0.001)
         reward -= (fuel_consumed / 1000.0)
@@ -233,14 +246,14 @@ class OpenAPNavEnv(gym.Env):
         # c. Pénalité de temps (encourage l'efficacité)
         reward -= 0.005 * duration_min
 
-        # d. Pénalité d'erreur latérale (Échelle : 1 NM -> -1.0)
+        # d. Pénalité d'erreur latérale (XTE) (Échelle : 1 NM -> -1.0)
         reward -= 1.0 * abs(xte_nm)
 
         # e. Bonus de précision : encourage le modèle à rester sur la trajectoire
         if abs(xte_nm) < 1.0:
             reward += 0.1 * (1.0 - abs(xte_nm))
 
-        # f. Pénalité de crash, si l'avion dévie beaucoup trop de la trajectoire, c'est finito
+        # f. Pénalité de crash
         if abs(xte_nm) > MAX_XTRACK_ERROR_NM:
             reward -= 100.0
 
@@ -270,6 +283,20 @@ class OpenAPNavEnv(gym.Env):
         prev_wp = self.nominal_route[self.current_waypoint_idx - 1]
 
         return GeoUtils.cross_track_error(
+            self.lat, self.lon,
+            prev_wp['lat'], prev_wp['lon'],
+            target_wp['lat'], target_wp['lon']
+        )
+
+    def _calculate_atd(self):
+        """Calcule la distance Along-Track (ATD) par rapport au segment actuel."""
+        if self.current_waypoint_idx >= len(self.nominal_route) or self.current_waypoint_idx == 0:
+            return 0.0
+
+        target_wp = self.nominal_route[self.current_waypoint_idx]
+        prev_wp = self.nominal_route[self.current_waypoint_idx - 1]
+
+        return GeoUtils.along_track_distance(
             self.lat, self.lon,
             prev_wp['lat'], prev_wp['lon'],
             target_wp['lat'], target_wp['lon']
