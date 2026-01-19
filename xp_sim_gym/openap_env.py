@@ -81,7 +81,7 @@ class OpenAPNavEnv(gym.Env):
     def _setup_initial_state(self):
         """Setup l'état initial de la simulation OpenAP"""
         self.steps_taken = 0
-        self.current_waypoint_idx = 0
+        self.current_waypoint_idx = 1
 
         # Only generate a route if none was provided in config
         if not self.nominal_route:
@@ -129,11 +129,7 @@ class OpenAPNavEnv(gym.Env):
 
     def step(self, action):
         # Capture state before simulation for progression reward
-        prev_dist_to_wp = 0.0
-        if self.current_waypoint_idx < len(self.nominal_route):
-            target_wp = self.nominal_route[self.current_waypoint_idx]
-            prev_dist_to_wp = GeoUtils.haversine_dist(
-                self.lat, self.lon, target_wp['lat'], target_wp['lon'])
+        prev_total_dist = self._get_total_remaining_dist()
 
         # action is in [-1, 1], map to physical ranges
         # heading offset mapping: [-1, 1] -> [MIN_HEADING_OFFSET, MAX_HEADING_OFFSET]
@@ -191,22 +187,22 @@ class OpenAPNavEnv(gym.Env):
         self.current_fuel_kg -= fuel_consumed
 
         # 4. Check Waypoint/Segment Logic
+        was_complete = self.current_waypoint_idx >= len(self.nominal_route)
         self._check_waypoint_progression()
+        is_complete = self.current_waypoint_idx >= len(self.nominal_route)
 
         # 5. Reward Calculation and Status
         xte_nm = self._calculate_xte()
 
-        # Calculate Progression (Reward for reducing distance to next waypoint)
-        new_dist_to_wp = 0.0
-        if self.current_waypoint_idx < len(self.nominal_route):
-            target_wp = self.nominal_route[self.current_waypoint_idx]
-            new_dist_to_wp = GeoUtils.haversine_dist(
-                self.lat, self.lon, target_wp['lat'], target_wp['lon'])
+        # Calculate Global Progression (Reward for reducing total distance to destination)
+        new_total_dist = self._get_total_remaining_dist()
+        progression_nm = prev_total_dist - new_total_dist
 
-        progression_nm = prev_dist_to_wp - new_dist_to_wp
+        # Check for first-time route completion
+        terminal_bonus = is_complete and not was_complete
 
         reward = self._compute_reward(
-            fuel_consumed, duration_min, xte_nm, progression_nm)
+            fuel_consumed, duration_min, xte_nm, progression_nm, terminal_bonus)
 
         terminated = False
         truncated = False
@@ -221,7 +217,7 @@ class OpenAPNavEnv(gym.Env):
 
         return self._get_observation(), reward, terminated, truncated, {}
 
-    def _compute_reward(self, fuel_consumed, duration_min, xte_nm, progression_nm):
+    def _compute_reward(self, fuel_consumed, duration_min, xte_nm, progression_nm, terminal_bonus):
         """
         Calcule la récompense (reward) pour l'étape actuelle en considérant XTE et ATE.
 
@@ -229,46 +225,73 @@ class OpenAPNavEnv(gym.Env):
             fuel_consumed (float): Carburant consommé pendant l'étape (kg).
             duration_min (float): Durée de l'étape (minutes).
             xte_nm (float): Erreur latérale / Cross-track error (NM).
-            progression_nm (float): Progression longitudinale / ATE factor (NM).
+            progression_nm (float): Progression globale (NM).
+            terminal_bonus (bool): Si on vient de terminer la route.
 
         Returns:
             float: La récompense calculée.
         """
         reward = 0.0
 
-        # a. Récompense de progression (Facteur ATE/ATD)
-        # On récompense le fait de s'être rapproché du prochain point de passage
-        reward += 0.5 * progression_nm
+        # a. Récompense de progression globale
+        # On récompense le fait de s'être rapproché de la destination finale
+        reward += 2.0 * progression_nm
 
         # b. Pénalité de carburant (Échelle : 1 kg -> -0.001)
         reward -= (fuel_consumed / 1000.0)
 
-        # c. Pénalité de temps (encourage l'efficacité)
-        reward -= 0.005 * duration_min
+        # c. Pénalité de temps (LOITERING PENALTY)
+        # Augmentée à 0.5 par minute pour être plus stricte que progression_nm si GS est faible.
+        # Progression à 250kts = ~4.1 NM/min = +8.2 reward/min.
+        # Coût temporel de -0.5 reward/min est raisonnable (1/16 de la progression max).
+        reward -= 0.5 * duration_min
 
         # d. Pénalité d'erreur latérale (XTE) (Échelle : 1 NM -> -1.0)
         reward -= 1.0 * abs(xte_nm)
 
-        # e. Bonus de précision : encourage le modèle à rester sur la trajectoire
-        if abs(xte_nm) < 1.0:
-            reward += 0.1 * (1.0 - abs(xte_nm))
+        # e. Bonus de réussite (Terminal Reward)
+        if terminal_bonus:
+            reward += 100.0
 
-        # f. Pénalité de crash
+        # f. Pénalité de crash / Sortie de route
         if abs(xte_nm) > MAX_XTRACK_ERROR_NM:
             reward -= 100.0
 
         return reward
 
     def _check_waypoint_progression(self):
+        """
+        Sequences waypoints if the aircraft gets close (5 NM) OR passes abeam 
+        (along-track distance to the next waypoint becomes negative or very small).
+        """
         if self.current_waypoint_idx < len(self.nominal_route):
             target_wp = self.nominal_route[self.current_waypoint_idx]
+
+            # 1. Proximity check
             dist = GeoUtils.haversine_dist(
                 self.lat, self.lon, target_wp['lat'], target_wp['lon'])
 
-            # Simple sequencing logic: if we pass abeam or get close
-            # For now, just proximity
-            if dist < 5.0:
+            # 2. Abeam check (if we have a previous waypoint to define a segment)
+            passed_abeam = False
+            if self.current_waypoint_idx > 0:
+                prev_wp = self.nominal_route[self.current_waypoint_idx - 1]
+                atd = GeoUtils.along_track_distance(
+                    self.lat, self.lon,
+                    prev_wp['lat'], prev_wp['lon'],
+                    target_wp['lat'], target_wp['lon']
+                )
+                segment_dist = GeoUtils.haversine_dist(
+                    prev_wp['lat'], prev_wp['lon'],
+                    target_wp['lat'], target_wp['lon']
+                )
+                # If along-track distance exceeds segment length, we've passed it
+                if atd > segment_dist:
+                    passed_abeam = True
+
+            if dist < 5.0 or passed_abeam:
                 self.current_waypoint_idx += 1
+                # If we passed one, recursively check if we passed the next one too
+                self._check_waypoint_progression()
 
     def _calculate_xte(self):
         """Calcule la XTE aka. Cross-Track Error (déviation par rapport au plan de vol)"""
@@ -301,6 +324,28 @@ class OpenAPNavEnv(gym.Env):
             prev_wp['lat'], prev_wp['lon'],
             target_wp['lat'], target_wp['lon']
         )
+
+    def _get_total_remaining_dist(self):
+        """
+        Calcule la distance totale restante le long de la route programmée.
+        Distance = Distance (avion -> waypoint actuel) + Somme des legs restants.
+        """
+        if self.current_waypoint_idx >= len(self.nominal_route):
+            return 0.0
+
+        # 1. Distance to current active waypoint
+        target_wp = self.nominal_route[self.current_waypoint_idx]
+        total_dist = GeoUtils.haversine_dist(
+            self.lat, self.lon, target_wp['lat'], target_wp['lon'])
+
+        # 2. Add all subsequent legs
+        for i in range(self.current_waypoint_idx, len(self.nominal_route) - 1):
+            wp1 = self.nominal_route[i]
+            wp2 = self.nominal_route[i+1]
+            total_dist += GeoUtils.haversine_dist(
+                wp1['lat'], wp1['lon'], wp2['lat'], wp2['lon'])
+
+        return total_dist
 
     def _sample_wind_at(self, lat, lon, alt):
         return self.wind_u, self.wind_v
