@@ -1,5 +1,6 @@
 import math
 
+
 class GeoUtils:
     R_EARTH_NM = 3440.06479  # Radius of Earth in Nautical Miles
 
@@ -9,8 +10,9 @@ class GeoUtils:
         phi1, phi2 = math.radians(lat1), math.radians(lat2)
         dphi = math.radians(lat2 - lat1)
         dlambda = math.radians(lon2 - lon1)
-        
-        a = math.sin(dphi/2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda/2)**2
+
+        a = math.sin(dphi/2)**2 + math.cos(phi1) * \
+            math.cos(phi2) * math.sin(dlambda/2)**2
         c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
         return GeoUtils.R_EARTH_NM * c
 
@@ -19,9 +21,10 @@ class GeoUtils:
         """Returns initial bearing in degrees (0-360) from pt1 to pt2."""
         phi1, phi2 = math.radians(lat1), math.radians(lat2)
         dlambda = math.radians(lon2 - lon1)
-        
+
         y = math.sin(dlambda) * math.cos(phi2)
-        x = math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * math.cos(phi2) * math.cos(dlambda)
+        x = math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * \
+            math.cos(phi2) * math.cos(dlambda)
         theta = math.atan2(y, x)
         return (math.degrees(theta) + 360) % 360
 
@@ -30,10 +33,11 @@ class GeoUtils:
         """
         Returns Cross Track Error (NM). Positive = Right of track, Negative = Left.
         """
-        dist_13 = GeoUtils.haversine_dist(lat_start, lon_start, lat_pos, lon_pos)
+        dist_13 = GeoUtils.haversine_dist(
+            lat_start, lon_start, lat_pos, lon_pos)
         brg_13 = GeoUtils.bearing(lat_start, lon_start, lat_pos, lon_pos)
         brg_12 = GeoUtils.bearing(lat_start, lon_start, lat_end, lon_end)
-        
+
         rel_brg = math.radians(brg_13 - brg_12)
         return dist_13 * math.sin(rel_brg)
 
@@ -42,9 +46,10 @@ class GeoUtils:
         """
         Returns Along Track Distance (NM) from start to the projection of pos on segment.
         """
-        dist_13 = GeoUtils.haversine_dist(lat_start, lon_start, lat_pos, lon_pos)
+        dist_13 = GeoUtils.haversine_dist(
+            lat_start, lon_start, lat_pos, lon_pos)
         brg_13 = GeoUtils.bearing(lat_start, lon_start, lat_pos, lon_pos)
         brg_12 = GeoUtils.bearing(lat_start, lon_start, lat_end, lon_end)
-        
+
         rel_brg = math.radians(brg_13 - brg_12)
         return dist_13 * math.cos(rel_brg)

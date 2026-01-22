@@ -14,6 +14,8 @@ PFE
 ├── xpc # Code du plugin X-Plane Connect
 ├── README.md
 ├── pyproject.toml
-├── scripts # Scripts d'entraînement et de test
+├── benchmark_performance # Scripts de benchmark d'un agent baseline vs agent entraîné
+├── train_curriculum # Scripts d'entraînement d'un agent sur un cursus d'apprentissage  
+├── visualize_flight # Scripts de visualisation d'un vol    
 └── uv.lock
 ```

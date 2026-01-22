@@ -31,6 +31,7 @@ class OpenAPNavEnv(gym.Env):
         *   `norm_wfwd` : Vent longitudinal relatif à l'avion / MAX_WIND
         *   `norm_wrgt` : Vent latéral relatif à l'avion / MAX_WIND
         *   `applied_offset` : La dernière action de déviation demandée (normalisée [-1, 1]).
+        *   `applied_duration` : La dernière durée demandée (normalisée [-1, 1]).
 
     2.  **Contexte de la Route (4)** :
         *   `xte` : Erreur Latérale (Cross-Track Error) / MAX_XTRACK_ERROR_NM (50 NM)
@@ -50,11 +51,10 @@ class OpenAPNavEnv(gym.Env):
     1.  `Heading Offset` : Déviation par rapport au cap **autonome** (vers le prochain waypoint). 
         *   0 => Voler directement vers le waypoint.
         *   Normalisé sur [MIN_HEADING_OFFSET, MAX_HEADING_OFFSET] degrés.
-    2.  `Duration` : Durée de l'action de maintien de cap.
+    2.  `Duration` : Durée de l'action avant le prochain pas de décision.
         *   Normalisé sur [MIN_DURATION_MIN, MAX_DURATION_MIN] minutes.
-    3.  `Deviate` : Toggle d'activation de la déviation.
-        *   Action > 0 => Déviation activée (utilise Heading Offset).
-        *   Action <= 0 => Déviation désactivée (Heading Offset forcé à 0).
+
+    La simulation utilise des sous-pas d'une minute pour la physique.
     """
     metadata = {"render_modes": [], "render_fps": 1}
 
@@ -73,20 +73,22 @@ class OpenAPNavEnv(gym.Env):
         self.current_waypoint_idx = 0
         self.nominal_route = self.config.nominal_route if self.config.nominal_route else []
 
-        # Obs dim: 7 (State) + 4 (Route) + 4*N (Lookahead)
-        obs_dim = 7 + 4 + (4 * self.lookahead_count)
+        # Obs dim: 8 (State) + 4 (Route) + 4*N (Lookahead)
+        obs_dim = 8 + 4 + (4 * self.lookahead_count)
 
         self.observation_space = spaces.Box(
             low=-1.0, high=1.0, shape=(obs_dim,), dtype=np.float32
         )
 
-        # Normalized action space [-1, 1] for 3 components
+        # Normalized action space [-1, 1] for 2 components:
+        # 1. Heading Offset [MIN_HEADING_OFFSET, MAX_HEADING_OFFSET]
+        # 2. Duration [MIN_DURATION_MIN, MAX_DURATION_MIN] minutes
         self.action_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(3,), dtype=np.float32
+            low=-1.0, high=1.0, shape=(2,), dtype=np.float32
         )
 
         self.previous_offset = 0.0  # Initialize previous offset
-        self.previous_is_deviating = False  # Track deviation state changes
+        self.previous_duration = 0.0  # Initialize previous duration
 
         self.route_generator = RouteStageGenerator(self.config)
 
@@ -142,7 +144,7 @@ class OpenAPNavEnv(gym.Env):
 
     def set_pretraining_stage(self, stage):
         """Règle le niveau de difficulté de l'environnement pour le pré-entraînement"""
-        if stage not in [1, 2, 3, 4, 5]:
+        if stage not in [1, 2, 3, 4, 5, 6]:
             print(f"Warning: Etape {stage} invalide.")
             return
 
@@ -152,7 +154,8 @@ class OpenAPNavEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self._setup_initial_state()
-        self.previous_is_deviating = False
+        self.previous_offset = 0.0
+        self.previous_duration = 0.0
         return self._get_observation(), {}
 
     def step(self, action):
@@ -169,13 +172,11 @@ class OpenAPNavEnv(gym.Env):
             (action[1] + 1.0) * 0.5 * (MAX_DURATION_MIN - MIN_DURATION_MIN)
         duration_sec = duration_min * 60.0
 
-        # Deviate Toggle: action[2] > 0 means we allow deviation
-        is_deviating = action[2] > 0
-        if not is_deviating:
-            heading_offset_deg = 0.0
+        # is_deviating is now true if heading offset is non-zero (with small epsilon)
+        is_deviating = abs(heading_offset_deg) > 0.01
 
         remaining_time = duration_sec
-        dt_sim = 60.0  # 1 minute sub-steps for waypoint checking
+        dt_sim = 60.0  # 1 minute sub-steps for physics
 
         total_fuel_consumed = 0.0
         total_distance_m = 0.0
@@ -286,7 +287,7 @@ class OpenAPNavEnv(gym.Env):
         terminated = False
         truncated = False
 
-        if self.steps_taken >= MAX_DEVIATION_SEGMENTS:
+        if self.steps_taken >= self.config.max_steps:
             truncated = True
 
         if abs(xte_nm) > MAX_XTRACK_ERROR_NM:
@@ -296,14 +297,16 @@ class OpenAPNavEnv(gym.Env):
             terminated = True
 
         self.steps_taken += 1
-        self.previous_is_deviating = is_deviating
+        self.previous_offset = action[0]
+        self.previous_duration = action[1]
 
         info = {
             "xte": xte_nm,
             "ate": ate_nm,
             "fuel_consumed": fuel_consumed,
             "progression": progression_nm,
-            "distance_flown": total_distance_m / 1852.0
+            "distance_flown": total_distance_m / 1852.0,
+            "duration": duration_min
         }
 
         return self._get_observation(), reward, terminated, truncated, info
@@ -359,34 +362,29 @@ class OpenAPNavEnv(gym.Env):
             reward_xte = W_XTE_BASE * abs(xte_nm) * duration_min
         else:
             # Exponentially harder penalty beyond 10 NM
-            reward_xte = (W_XTE_BASE * 10.0 + W_XTE_HIGH * (abs(xte_nm) - 10.0)) * duration_min
-
-        # --- 5. Action Smoothing (Optional) ---
-        reward_smoothing = 0.0
-        if is_deviating != self.previous_is_deviating:
-            reward_smoothing = W_DEV_CHANGE
+            reward_xte = (W_XTE_BASE * 10.0 + W_XTE_HIGH *
+                          (abs(xte_nm) - 10.0)) * duration_min
 
         # --- 6. Terminal ---
         terminal_reward = 0.0
-        if terminal_bonus:
-            terminal_reward = 100.0  # Big finish reward
-        elif abs(xte_nm) > MAX_XTRACK_ERROR_NM:
-            terminal_reward = -100.0 # Crash penalty
+        # if terminal_bonus:
+        # terminal_reward = 100.0  # Big finish reward
+        if abs(xte_nm) > MAX_XTRACK_ERROR_NM:
+            terminal_reward = -100.0  # Crash penalty
 
         # Total
         step_reward = (
             reward_progress +
             reward_fuel +
             reward_xte +
-            reward_efficiency +
-            reward_smoothing
+            reward_efficiency
         )
 
         return step_reward + terminal_reward
 
     def _check_waypoint_progression(self):
         """
-        Sequences waypoints if the aircraft gets close (5 NM) OR passes abeam 
+        Sequences waypoints if the aircraft gets close (15 NM) OR passes abeam 
         (along-track distance to the next waypoint becomes negative or very small).
         """
         if self.current_waypoint_idx < len(self.nominal_route):
@@ -413,7 +411,7 @@ class OpenAPNavEnv(gym.Env):
                 if atd > segment_dist:
                     passed_abeam = True
 
-            if dist < 5.0 or passed_abeam:
+            if dist < self.config.flyby_waypoint_dist or passed_abeam:
                 self.current_waypoint_idx += 1
                 # If we passed one, recursively check if we passed the next one too
                 self._check_waypoint_progression()
@@ -543,7 +541,8 @@ class OpenAPNavEnv(gym.Env):
             np.clip(norm_fuel, 0.0, 1.0),
             np.clip(norm_wfwd, -1.0, 1.0),
             np.clip(norm_wrgt, -1.0, 1.0),
-            np.clip(norm_offset, -1.0, 1.0)
+            np.clip(norm_offset, -1.0, 1.0),
+            np.clip(self.previous_duration, -1.0, 1.0)
         ], dtype=np.float32)
 
         # Route Obs

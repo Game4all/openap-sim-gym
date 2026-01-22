@@ -1,23 +1,24 @@
+"""
+Script pour entraîner le modèle PPO de déviation avec tout le cursus d'apprentissage.
+"""
 import os
 import gymnasium as gym
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.env_checker import check_env
 from xp_sim_gym.openap_env import OpenAPNavEnv, PlaneEnvironmentConfig
+import argparse
 
 
-class CurriculumCallback(BaseCallback):
+class CurriculumTrainingCallback(BaseCallback):
     """
-    Custom callback for curriculum learning.
-    Increases environment difficulty based on elapsed timesteps.
-    Could also be based on mean reward/success rate.
+    Callback d'entraînement pour changer le stage de pré-entraînement en fonction de l'avancement global.
     """
 
     def __init__(self, verbose=0):
-        super(CurriculumCallback, self).__init__(verbose)
+        super(CurriculumTrainingCallback, self).__init__(verbose)
         self.stage = 1
+
         # Define stage transitions (timestep thresholds)
-        # 1M steps total, ~200k per stage
         self.thresholds = {
             1: 200_000,
             2: 400_000,
@@ -27,40 +28,59 @@ class CurriculumCallback(BaseCallback):
 
     def _on_step(self) -> bool:
         current_step = self.num_timesteps
-
         desired_stage = self.stage
 
         if self.stage == 1 and current_step > self.thresholds[1]:
             desired_stage = 2
         elif self.stage == 2 and current_step > self.thresholds[2]:
             desired_stage = 3
+        elif self.stage == 3 and current_step > self.thresholds[3]:
+            desired_stage = 4
 
         if desired_stage > self.stage:
             self.stage = desired_stage
 
-            # Update all environments (if vectorized)
-            # self.training_env is usually a VecEnv
             try:
                 self.training_env.env_method(
-                    "set_pretraining_stage", self.stage)
+                    "set_pretraining_stage", self.stage
+                )
             except AttributeError:
-                # Fallback if not VecEnv or method missing
                 if hasattr(self.training_env, "set_pretraining_stage"):
                     self.training_env.set_pretraining_stage(self.stage)
 
             if self.verbose > 0:
                 print(
-                    f"\n[Curriculum] Advancing to Stage {self.stage} at step {current_step}")
+                    f"\n[Curriculum] Advancing to Stage {self.stage} at step {current_step}"
+                )
 
         return True
 
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Script d'entraînement du modèle de déviation avec apprentissage par renforcement"
+    )
+    parser.add_argument(
+        "--total-timesteps",
+        type=int,
+        default=1_000_000,
+        help="Total number of training timesteps",
+    )
+    parser.add_argument(
+        "--n-steps",
+        type=int,
+        default=2048,
+        help="Number of steps per rollout (PPO n_steps)",
+    )
+    parser.add_argument("--batch-size",
+                        type=int, default=64)
+
+    args = parser.parse_args()
+
     log_dir = "logs"
     os.makedirs(log_dir, exist_ok=True)
 
-    # Initialize Environment
-    config = PlaneEnvironmentConfig(aircraft_type='A320')
+    config = PlaneEnvironmentConfig(aircraft_type="A320")
     env = OpenAPNavEnv(config=config)
 
     # Initialize Agent
@@ -71,24 +91,24 @@ def main():
         tensorboard_log=log_dir,
         learning_rate=3e-4,
         ent_coef=0.02,
-        n_steps=2048,
-        batch_size=64,
+        n_steps=args.n_steps,
+        batch_size=args.batch_size,
         gamma=0.99,
         device="cpu",
     )
 
-    # Create Curriculum Callback
-    curr_callback = CurriculumCallback(verbose=1)
+    curr_callback = CurriculumTrainingCallback(verbose=1)
 
-    # Train
-    print("Starting Pretraining with 5-Stage Curriculum...")
-    total_timesteps = 2_000_000
-    model.learn(total_timesteps=total_timesteps, callback=curr_callback, progress_bar=True)
+    print("Début de l'entraînement")
+    model.learn(
+        total_timesteps=args.total_timesteps,
+        callback=curr_callback,
+        progress_bar=True,
+    )
 
-    # Save Model
     save_path = "ppo_flight_deviation_pretrained"
     model.save(save_path)
-    print(f"Training complete. Model saved to {save_path}")
+    print(f"Fin de l'entraînement. Model sauvegardé dans {save_path}")
 
 
 if __name__ == "__main__":
