@@ -86,6 +86,7 @@ class OpenAPNavEnv(gym.Env):
         )
 
         self.previous_offset = 0.0  # Initialize previous offset
+        self.previous_is_deviating = False  # Track deviation state changes
 
         self.route_generator = RouteStageGenerator(self.config)
 
@@ -151,6 +152,7 @@ class OpenAPNavEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self._setup_initial_state()
+        self.previous_is_deviating = False
         return self._get_observation(), {}
 
     def step(self, action):
@@ -265,8 +267,11 @@ class OpenAPNavEnv(gym.Env):
         # Check for first-time route completion
         terminal_bonus = is_complete and not was_complete
 
-        # Calculate Average GS for the step (in m/s)
-        avg_gs_ms = total_gs_weighted / duration_sec
+        # Calculate VMG Gain (kts)
+        # VMG is the rate of progress towards the destination
+        vmg_kts = (progression_nm / duration_min) * 60.0
+        tas_kts = self.tas_ms / 0.514444
+        vmg_gain = vmg_kts - tas_kts
 
         reward = self._compute_reward(
             fuel_consumed=fuel_consumed,
@@ -274,8 +279,7 @@ class OpenAPNavEnv(gym.Env):
             xte_nm=xte_nm,
             progression_nm=progression_nm,
             terminal_bonus=terminal_bonus,
-            avg_gs_ms=avg_gs_ms,
-            action_offset=heading_offset_deg,
+            vmg_gain=vmg_gain,
             is_deviating=is_deviating
         )
 
@@ -292,6 +296,7 @@ class OpenAPNavEnv(gym.Env):
             terminated = True
 
         self.steps_taken += 1
+        self.previous_is_deviating = is_deviating
 
         info = {
             "xte": xte_nm,
@@ -303,82 +308,79 @@ class OpenAPNavEnv(gym.Env):
 
         return self._get_observation(), reward, terminated, truncated, info
 
-    def _compute_reward(self, fuel_consumed, duration_min, xte_nm, progression_nm, terminal_bonus, avg_gs_ms, action_offset, is_deviating):
+    def _compute_reward(self, fuel_consumed, duration_min, xte_nm, progression_nm, terminal_bonus, vmg_gain, is_deviating):
         """
-        Calcule la récompense (reward) pour l'étape actuelle.
-
-        Encoded objectives:
-        1. Directional progress: Reward for reducing total distance to destination.
-        2. No loitering: Penalty for time elapsed (encourages efficiency).
-        3. XTE discipline: Penalty for cross-track error, integrated over time.
-        4. Fuel cost: Penalty for fuel consumption.
-        5. Terminal success/failure: Large rewards/penalties for reaching destination or violating XTE limits.
-        6. Penalty for useless detours: Small penalty for non-zero heading offsets.
-        7. Maximize Tailwind/GS Benefit: Reward for higher ground speed relative to TAS.
-        8. Penalty for Dithering/Useless Deviation: Extra penalty if deviating when wind is low.
+        Optimized Reward Function for Efficiency (Min Fuel/Time).
         """
 
-        # --- Weights Configuration (Re-balanced for PPO stability and efficiency) ---
-        W_PROGRESS = 0.5      # Increased Weight for Progress (100 NM = 50 pts)
-        W_TIME = -0.6         # Increased Time penalty (10 min = -6 pts)
-        W_XTE = -0.15         # Slightly stricter XTE discipline
-        W_TAILWIND = 2.0      # Reward for GS Gain (10 min at +20kts = +0.6 pts roughly, but normalized)
-        W_FUEL = -0.05        # Fuel penalty (1000 kg = -0.5 pts)
-        W_DETOUR = -0.1       # Detour penalty per (abs_offset * min)
-        W_DEV_ACTIVATE = -0.2 # Increased base cost for deviation (10 min = -2 pts)
-        W_NO_WIND_DEV = -0.5  # Extra penalty if deviating without wind (10 min = -5 pts)
+        # --- Weights ---
+        # 1. Progression: The main driver. High enough to overcome small XTE penalties.
+        W_PROGRESS = 1.0
 
-        # --- 1. Directional Progress ---
+        # 2. Fuel/Time: The cost of existence.
+        # This implicitly penalizes adding distance. If you fly longer, you lose more points.
+        W_FUEL = -0.1          # e.g., -100kg = -10 pts
+
+        # 3. XTE: Safety Constraint.
+        # Use a "Corridor" approach: Low penalty for small deviations (allows optimization),
+        # high penalty for large deviations.
+        W_XTE_BASE = -0.05
+        W_XTE_HIGH = -0.5
+
+        # 4. Action Smoothing
+        W_DEV_CHANGE = -0.1    # Penalty for flickering the deviation switch
+
+        # --- 1. Progression (The Carrot) ---
+        # Reward simply getting closer.
         reward_progress = W_PROGRESS * progression_nm
 
-        # --- 2. No Loitering (Time Penalty) ---
-        reward_time = W_TIME * duration_min
-
-        # --- 3. XTE Discipline ---
-        reward_xte = W_XTE * abs(xte_nm) * duration_min
-
-        # --- 4. Fuel Cost ---
+        # --- 2. Cost of Operation (The Stick for adding distance) ---
+        # If the agent takes a detour that adds 10km, it burns more fuel.
+        # This term AUTOMATICALLY penalizes inefficient routes.
         reward_fuel = W_FUEL * fuel_consumed
 
-        # --- 5. Maximize Tailwind Benefit ---
-        # Instead of generic GS, we reward GS gain over TAS. 
-        # This explicitly tells the agent: "You found a better path with more tailwind".
-        gs_gain_ms = avg_gs_ms - self.tas_ms
-        # Normalize relative to a "good" wind benefit (e.g. 50 kts ~ 25 m/s)
-        norm_gs_gain = gs_gain_ms / 25.0 
-        reward_tailwind = W_TAILWIND * norm_gs_gain * duration_min
+        # --- 3. Efficiency Bonus (VMG) ---
+        # Optional: Boost learning by explicitly rewarding flying EFFICIENTLY.
+        # If VMG > TAS, the agent is using wind effectively towards the target.
+        # This replaces your old 'Tailwind' reward but accounts for direction.
+        reward_efficiency = 0.0
+        if vmg_gain > 0:
+            reward_efficiency = 0.5 * vmg_gain  # Bonus for super-efficiency
+        else:
+            reward_efficiency = 1.0 * vmg_gain  # Penalty for fighting wind or bad heading
 
-        # --- 6. Penalty for Useless Detours ---
-        reward_detour = W_DETOUR * abs(action_offset) * duration_min
+        # Scale by duration to make it physically consistent
+        reward_efficiency *= (duration_min / 10.0)
 
-        # --- 7. Deviation Activation & No-Wind Penalty ---
-        reward_activate = 0.0
-        if is_deviating:
-            reward_activate += W_DEV_ACTIVATE * duration_min
-            
-            # Local wind check
-            wind_speed_ms = math.sqrt(self.wind_u**2 + self.wind_v**2)
-            if wind_speed_ms < 0.5144: # < 1 knot
-                reward_activate += W_NO_WIND_DEV * duration_min
+        # --- 4. Smart XTE Penalty ---
+        # Allow deviation up to 10 NM with low penalty, then scale up.
+        # This allows the agent to leave the line to find wind without immediate panic.
+        if abs(xte_nm) < 10.0:
+            reward_xte = W_XTE_BASE * abs(xte_nm) * duration_min
+        else:
+            # Exponentially harder penalty beyond 10 NM
+            reward_xte = (W_XTE_BASE * 10.0 + W_XTE_HIGH * (abs(xte_nm) - 10.0)) * duration_min
 
-        # --- Base Step Reward ---
-        step_reward = (
-            reward_progress +
-            reward_time +
-            reward_xte +
-            reward_fuel +
-            reward_tailwind +
-            reward_detour +
-            reward_activate
-        )
+        # --- 5. Action Smoothing (Optional) ---
+        reward_smoothing = 0.0
+        if is_deviating != self.previous_is_deviating:
+            reward_smoothing = W_DEV_CHANGE
 
-        # --- 8. Terminal Success/Failure ---
+        # --- 6. Terminal ---
         terminal_reward = 0.0
         if terminal_bonus:
-            terminal_reward += 50.0
+            terminal_reward = 100.0  # Big finish reward
+        elif abs(xte_nm) > MAX_XTRACK_ERROR_NM:
+            terminal_reward = -100.0 # Crash penalty
 
-        if abs(xte_nm) > MAX_XTRACK_ERROR_NM:
-            terminal_reward -= 50.0
+        # Total
+        step_reward = (
+            reward_progress +
+            reward_fuel +
+            reward_xte +
+            reward_efficiency +
+            reward_smoothing
+        )
 
         return step_reward + terminal_reward
 
