@@ -10,3 +10,6 @@ wheels/
 .venv
 logs/
 *.zip
+
+# config par defaut de l'entraînement
+curriculum_config.json

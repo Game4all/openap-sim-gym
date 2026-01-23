@@ -1,9 +1,9 @@
 from dataclasses import dataclass, field
+from pydantic import BaseModel
 from typing import Dict, List, Optional
 
 
-@dataclass
-class WindStreamConfig:
+class WindStreamConfig(BaseModel):
     lat: float
     lon: float
     direction: float  # bearing in degrees
@@ -11,8 +11,7 @@ class WindStreamConfig:
     max_speed_kts: float
 
 
-@dataclass
-class PlaneEnvironmentConfig:
+class PlaneEnvironmentConfig(BaseModel):
     aircraft_type: str
     lookahead_count: int = 3
     nominal_route: Optional[List[Dict]] = None

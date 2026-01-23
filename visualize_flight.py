@@ -97,6 +97,7 @@ def main():
     step_count = 0
 
     try:
+        total_reward = 0
         while not done and step_count < 300:
             # 4. Action selection
             if use_model:
@@ -113,6 +114,7 @@ def main():
             time.sleep(0.5)
 
             step_count += 1
+            total_reward += reward
             if step_count % 10 == 0:
                 print(
                     f"Step {step_count:03d} | "
@@ -121,6 +123,7 @@ def main():
                 )
 
         print("Simulation finished.")
+        print(f"Total reward: {total_reward}")
 
     except KeyboardInterrupt:
         print("Interrupted by user.")
