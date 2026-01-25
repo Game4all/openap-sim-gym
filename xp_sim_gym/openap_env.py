@@ -7,10 +7,10 @@ from xp_sim_gym.config import PlaneEnvironmentConfig, WindStreamConfig
 from .utils import GeoUtils
 from .route_generator import RouteStageGenerator
 from .constants import (
-    MAX_DEVIATION_SEGMENTS, MAX_XTRACK_ERROR_NM,
+    FT_TO_M, KTS_TO_M_S, MAX_DEVIATION_SEGMENTS, MAX_XTRACK_ERROR_NM,
     MAX_ALT, MAX_SPD, MAX_FUEL, MAX_WIND, MAX_DIST,
     MIN_HEADING_OFFSET, MAX_HEADING_OFFSET,
-    MIN_DURATION_MIN, MAX_DURATION_MIN
+    MIN_DURATION_MIN, MAX_DURATION_MIN, NM_TO_METER
 )
 
 
@@ -222,7 +222,7 @@ class OpenAPNavEnv(gym.Env):
 
             # Distance flown in this sub-step
             dist_m = self.gs_ms * current_dt
-            dist_nm = dist_m / 1852.0
+            dist_nm = dist_m / NM_TO_METER
             total_distance_m += dist_m
 
             # Update Position
@@ -241,8 +241,8 @@ class OpenAPNavEnv(gym.Env):
             # d. Fuel Consumption (for current_dt)
             ff_kg_s = self.fuel_flow_model.enroute(
                 mass=self.current_fuel_kg + 40000,
-                tas=self.tas_ms / 0.514444,
-                alt=self.alt_m / 0.3048,
+                tas=self.tas_ms / KTS_TO_M_S,
+                alt=self.alt_m / FT_TO_M,
             )
             fuel_step = ff_kg_s * current_dt
             self.current_fuel_kg -= fuel_step
@@ -274,7 +274,7 @@ class OpenAPNavEnv(gym.Env):
         # Calculate VMG Gain (kts)
         # VMG is the rate of progress towards the destination
         vmg_kts = (progression_nm / duration_min) * 60.0
-        tas_kts = self.tas_ms / 0.514444
+        tas_kts = self.tas_ms / KTS_TO_M_S
         vmg_gain = vmg_kts - tas_kts
 
         reward = self._compute_reward(
@@ -308,7 +308,7 @@ class OpenAPNavEnv(gym.Env):
             "ate": ate_nm,
             "fuel_consumed": fuel_consumed,
             "progression": progression_nm,
-            "distance_flown": total_distance_m / 1852.0,
+            "distance_flown": total_distance_m / NM_TO_METER,
             "duration": duration_min
         }
 
@@ -508,8 +508,8 @@ class OpenAPNavEnv(gym.Env):
 
                 rad = math.radians(stream.direction)
                 # U = Speed * sin(dir), V = Speed * cos(dir)
-                u = wind_speed * math.sin(rad) * 0.514444  # to m/s
-                v = wind_speed * math.cos(rad) * 0.514444
+                u = wind_speed * math.sin(rad) * KTS_TO_M_S  # to m/s
+                v = wind_speed * math.cos(rad) * KTS_TO_M_S
 
                 total_u += u
                 total_v += v
@@ -518,9 +518,9 @@ class OpenAPNavEnv(gym.Env):
 
     def _get_observation(self):
         # altitudes are in meters
-        norm_alt = self.alt_m / (MAX_ALT * 0.3048)
-        norm_tas = self.tas_ms / (MAX_SPD * 0.514444)
-        norm_gs = self.gs_ms / (MAX_SPD * 0.514444)
+        norm_alt = self.alt_m / (MAX_ALT * FT_TO_M)
+        norm_tas = self.tas_ms / (MAX_SPD * KTS_TO_M_S)
+        norm_gs = self.gs_ms / (MAX_SPD * KTS_TO_M_S)
         norm_fuel = self.current_fuel_kg / MAX_FUEL
 
         # Plane-local wind vector (Forward, Right)
@@ -529,8 +529,8 @@ class OpenAPNavEnv(gym.Env):
             math.sin(heading_rad) + self.wind_v * math.cos(heading_rad)
         w_rgt = self.wind_u * \
             math.cos(heading_rad) - self.wind_v * math.sin(heading_rad)
-        norm_wfwd = w_fwd / (MAX_WIND * 0.514444)
-        norm_wrgt = w_rgt / (MAX_WIND * 0.514444)
+        norm_wfwd = w_fwd / (MAX_WIND * KTS_TO_M_S)
+        norm_wrgt = w_rgt / (MAX_WIND * KTS_TO_M_S)
 
         # New State Observation: Applied Offset
         # We use the raw action value from the previous step which is already in [-1, 1]
@@ -626,8 +626,8 @@ class OpenAPNavEnv(gym.Env):
                 lookahead_obs.extend([
                     d / MAX_DIST,
                     rel_b / 180.0,
-                    along / (MAX_WIND * 0.5144),
-                    cross / (MAX_WIND * 0.5144)
+                    along / (MAX_WIND * KTS_TO_M_S),
+                    cross / (MAX_WIND * KTS_TO_M_S)
                 ])
             else:
                 lookahead_obs.extend([1.0, 0.0, 0.0, 0.0])
