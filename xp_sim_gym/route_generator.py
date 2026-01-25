@@ -2,12 +2,12 @@
 import math
 import numpy as np
 from typing import List, Dict, Tuple, Optional
-from .config import PlaneEnvironmentConfig, WindStreamConfig
+from .config import PlaneConfig, WindStreamConfig
 from .utils import GeoUtils
 
 
 class RouteStageGenerator:
-    def __init__(self, config: PlaneEnvironmentConfig, seed: Optional[int] = None):
+    def __init__(self, config: PlaneConfig, seed: Optional[int] = None):
         self.config = config
         self.seed = seed
 
@@ -177,11 +177,6 @@ class RouteStageGenerator:
     def generate_wind(self, stage: int, route: List[Dict], start_lat: float, start_lon: float) -> List[WindStreamConfig]:
         """Initialize the wind streams."""
         wind_streams = []
-
-        # Use config streams if provided
-        if self.config.wind_streams:
-            # Note: Returning config streams directly. Caller should copy if mutation is executed.
-            return list(self.config.wind_streams)
 
         # Randomize based on Stage
         if stage == 1:

@@ -11,7 +11,7 @@ import gymnasium as gym
 
 from xp_sim_gym.openap_env import OpenAPNavEnv
 from xp_sim_gym.viz_wrapper import OpenAPVizWrapper
-from xp_sim_gym.config import PlaneEnvironmentConfig
+from xp_sim_gym.config import EnvironmentConfig, PlaneConfig
 from xp_sim_gym.route_generator import RouteStageGenerator
 
 from stable_baselines3 import PPO
@@ -50,27 +50,22 @@ def main():
     # 1. Setup config
     lat_start, lon_start = 48.8566, 2.3522
 
-    base_config = PlaneEnvironmentConfig(
+    plane_config = PlaneConfig(
         aircraft_type="A320",
         initial_lat=lat_start,
         initial_lon=lon_start,
     )
 
-    generator = RouteStageGenerator(base_config, args.seed)
+    env_config = EnvironmentConfig()
+
+    generator = RouteStageGenerator(plane_config, args.seed)
     route, wind_streams = generator.generate(stage=args.stage)
 
-    config = PlaneEnvironmentConfig(
-        aircraft_type="A320",
-        initial_lat=route[0]['lat'],
-        initial_lon=route[0]['lon'],
-        nominal_route=route,
-        wind_streams=wind_streams,
-        randomize_wind=False
-    )
-
     # 2. Create env and wrap it
-    env = OpenAPNavEnv(config)
-    env.set_pretraining_stage(args.stage)
+    env = OpenAPNavEnv(plane_config, env_config)
+    env.set_nominal_route(route)
+    env.set_wind_config(wind_streams)
+
     env = OpenAPVizWrapper(env)
 
     # 3. Load model if needed

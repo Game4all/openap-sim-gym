@@ -11,32 +11,29 @@ class WindStreamConfig(BaseModel):
     max_speed_kts: float
 
 
-class PlaneEnvironmentConfig(BaseModel):
+class PlaneConfig(BaseModel):
+    """Configuration specific to the aircraft."""
     aircraft_type: str
-    lookahead_count: int = 3
-    nominal_route: Optional[List[Dict]] = None
 
-    # Initial Plane State
-
+    # Initial State
     initial_lat: float = 48.0
     initial_lon: float = 2.0
     initial_alt_m: float = 10058.4  # ~33k ft
-    initial_tas_ms: float = 231.5  # ~450 kts
+    initial_tas_ms: float = 231.5   # ~450 kts
     initial_fuel_kg: float = 15000.0
 
-    # If None, will be calculated from route
-
+    # Initial heading. If None, it will be auto computed from route
     initial_heading_mag: Optional[float] = None
 
-    # Wind Config
-    # Wind Config - Jet Stream / River Model
-    # List of wind streams. If empty and randomize_wind is True, streams will be generated based on stage.
-    wind_streams: List[WindStreamConfig] = field(default_factory=list)
-    randomize_wind: bool = True
+
+class EnvironmentConfig(BaseModel):
+    """Configuration for the RL Environment simulation."""
+
+    # Numbers of waypoints for which to expose information in the observation space
+    lookahead_count: int = 3
 
     # Threshold distance the plane must be under to mark a waypoint as visited
     flyby_waypoint_dist: float = 20.0
 
     # Max number of steps before environment truncates.
-    # NOTE: Keep this high when benchmarking to prevent baseline from not completing.
     max_steps: int = 300

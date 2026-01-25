@@ -4,11 +4,12 @@ Script pour entraîner le modèle PPO de déviation avec tout le cursus d'appren
 import os
 import gymnasium as gym
 import argparse
-from pydantic import BaseModel, Field
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
-from xp_sim_gym.openap_env import OpenAPNavEnv, PlaneEnvironmentConfig
+from pydantic import BaseModel, Field
 from rich import print as rprint, print_json
+from xp_sim_gym.openap_env import OpenAPNavEnv, PlaneConfig, EnvironmentConfig
+from xp_sim_gym import CurriculumPretrainingEnv
 
 
 class CurriculumTrainingConfig(BaseModel):
@@ -79,6 +80,9 @@ class CurriculumTrainingCallback(BaseCallback):
                 if hasattr(self.training_env, "set_pretraining_stage"):
                     self.training_env.set_pretraining_stage(self.stage)
 
+        # logger la phase du curriculum d'entraînement pour aider a debug
+        self.logger.record("env/curriculum_stage", self.stage)
+
         return True
 
 
@@ -115,12 +119,15 @@ def main():
     if args.total_timesteps:
         curriculum_config.total_steps = args.total_timesteps
 
-    # Setup de l'env de training
+    # Setup du dossier de log pour les run d'entraînement
     log_dir = "logs"
     os.makedirs(log_dir, exist_ok=True)
-    config = PlaneEnvironmentConfig(
-        aircraft_type=curriculum_config.aircraft_type)
-    env = OpenAPNavEnv(config=config)
+
+    # Setup de l'environement
+    plane_config = PlaneConfig(aircraft_type=curriculum_config.aircraft_type)
+    env_config = EnvironmentConfig()
+    env = CurriculumPretrainingEnv(OpenAPNavEnv(
+        plane_config, env_config), plane_config)
 
     # Initialization du modèle de PPO
     model = PPO(

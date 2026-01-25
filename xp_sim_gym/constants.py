@@ -20,6 +20,9 @@ MAX_DURATION_MIN = 30.0
 
 # Conversion constants
 
+# Nautic miles (NM) to meters (m)
 NM_TO_METER = 1852.0
+# Knots (kts) to meters/s (m/s)
 KTS_TO_M_S = 0.514444
+# Feet (ft) to meters (m)
 FT_TO_M = 0.3048

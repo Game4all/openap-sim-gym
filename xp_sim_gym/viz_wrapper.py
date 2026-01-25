@@ -233,7 +233,7 @@ class OpenAPVizWrapper(gym.Wrapper):
             f"Carburant: {int(self.env.current_fuel_kg)} kg",
             f"Vitesse TAS: {int(self.env.tas_ms / 0.514444)} kts",
             f"Vitesse GS: {int(self.env.gs_ms / 0.514444)} kts",
-            f"Niveau (Stage): {self.env.stage}"
+            # f"Niveau (Stage): {self.env.stage}"
         ]
 
         for i, line in enumerate(info_lines):
