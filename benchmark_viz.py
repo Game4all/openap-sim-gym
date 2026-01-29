@@ -49,6 +49,7 @@ def main():
     model = None
     try:
         model = PPO.load(args.model_path)
+        model.policy.set_training_mode(False)
         print(f"Loaded model from {args.model_path}")
     except Exception as e:
         print(f"Error loading model: {e}")

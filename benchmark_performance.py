@@ -114,6 +114,7 @@ def main():
     model_path = "ppo_flight_deviation_pretrained.zip"
     try:
         model = PPO.load(model_path)
+        model.policy.set_training_mode(False)
         print(f"Loaded PPO model from {model_path}")
     except Exception as e:
         print(f"Failed to load model: {e}")

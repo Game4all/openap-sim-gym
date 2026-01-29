@@ -1,4 +1,4 @@
-import gymnasium as gym
+﻿import gymnasium as gym
 import numpy as np
 import pygame
 import math
@@ -28,6 +28,7 @@ class BaseViz:
         self.lon_max = None
         self.lat_min = None
         self.lat_max = None
+        self.show_segment_times = True
 
     def _calculate_bounds(self, envs_data):
         """
@@ -109,7 +110,7 @@ class BaseViz:
             p2 = self._to_pixel(self.lat_max, lon)
             pygame.draw.line(self.screen, grid_color, p1, p2, 1)
 
-    def _draw_nominal_route(self, route, current_wp_idx, durations=None, color=(70, 70, 100), label_color=(200, 200, 200), label_offset=(5, 5), draw_route=True):
+    def _draw_nominal_route(self, route, current_wp_idx, durations=None, color=(70, 70, 100), label_color=(200, 200, 200), label_offset=(5, 5), draw_route=True, is_delta=False):
         if route:
             points = [self._to_pixel(wp['lat'], wp['lon']) for wp in route]
             if draw_route and len(points) > 1:
@@ -121,9 +122,23 @@ class BaseViz:
                     pygame.draw.rect(self.screen, wp_color, (p[0]-3, p[1]-3, 6, 6))
                 
                 # Draw segment duration if available (skip start point)
-                if durations and i > 0 and i <= len(durations):
+                if self.show_segment_times and durations and i > 0 and i <= len(durations):
                     dur_val = durations[i-1]
-                    dur_text = self.small_font.render(f"{dur_val:.1f}m", True, label_color)
+                    
+                    final_color = label_color
+                    text_content = f"{dur_val:.1f}m"
+                    
+                    if is_delta:
+                        if dur_val > 0.01:
+                            final_color = (255, 100, 100) # Red-ish for gain
+                            text_content = f"+{dur_val:.1f}m"
+                        elif dur_val < -0.01:
+                            final_color = (100, 255, 100) # Green-ish for loss
+                            text_content = f"{dur_val:.1f}m"
+                        else:
+                            final_color = (200, 200, 200)
+
+                    dur_text = self.small_font.render(text_content, True, final_color)
                     # Create a semi-transparent surface for the text
                     dur_text.set_alpha(180) 
                     self.screen.blit(dur_text, (p[0] + label_offset[0], p[1] + label_offset[1]))
@@ -225,6 +240,9 @@ class OpenAPVizWrapper(gym.Wrapper, BaseViz):
                 pygame.quit()
                 self.screen = None
                 return
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_t:
+                    self.show_segment_times = not self.show_segment_times
 
         self._draw_background()
         self._draw_nominal_route(getattr(self.env, 'nominal_route', []), self.env.current_waypoint_idx, self.all_segment_durations)
@@ -234,10 +252,10 @@ class OpenAPVizWrapper(gym.Wrapper, BaseViz):
 
         # Info text
         info_lines = [
-            f"Cap (HDG): {int(self.env.heading_mag)}°",
+            f"Cap (HDG): {int(self.env.heading_mag)}Â°",
             f"Ecart Lat (XTE): {self.env._calculate_xte():.2f} NM",
             f"Dist Parcours (ATE): {self.env._calculate_atd():.2f} NM",
-            f"Durée Totale: {self.total_duration_min:.1f} min",
+            f"DurÃ©e Totale: {self.total_duration_min:.1f} min",
             f"Segments (Last 3): {' / '.join([f'{d:.1f}' for d in self.last_segment_durations])}",
             f"Carburant: {int(self.env.current_fuel_kg)} kg",
             f"Vitesse TAS: {int(self.env.tas_ms / KTS_TO_M_S)} kts",
@@ -316,6 +334,9 @@ class MultiEnvViz(BaseViz):
                 pygame.quit()
                 self.screen = None
                 return
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_t:
+                    self.show_segment_times = not self.show_segment_times
 
         self._draw_background()
         
@@ -336,6 +357,25 @@ class MultiEnvViz(BaseViz):
                     label_color=self.colors[i],
                     label_offset=(5, offset_y),
                     draw_route=False
+                )
+            
+            # 3. Calculate and draw delta if exactly 2 envs (Baseline vs Agent)
+            if len(self.envs) == 2:
+                ap_history = self.all_segment_durations_history[0]
+                md_history = self.all_segment_durations_history[1]
+                
+                # Combine based on shortest history to avoid index errors
+                min_len = min(len(ap_history), len(md_history))
+                deltas = [md_history[j] - ap_history[j] for j in range(min_len)]
+                
+                offset_y = 5 + (2 * 15)
+                self._draw_nominal_route(
+                    route=common_route,
+                    current_wp_idx=-1,
+                    durations=deltas,
+                    label_offset=(5, offset_y),
+                    draw_route=False,
+                    is_delta=True
                 )
 
             self._draw_wind_field(self.envs[0])
