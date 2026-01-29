@@ -4,6 +4,7 @@ Script pour entraîner le modèle PPO de déviation avec tout le cursus d'appren
 import os
 import gymnasium as gym
 import argparse
+import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from pydantic import BaseModel, Field
@@ -87,6 +88,14 @@ class CurriculumTrainingCallback(BaseCallback):
 
         # logger la phase du curriculum d'entraînement pour aider a debug
         self.logger.record("curriculum/current_stage", self.stage)
+        self.logger.record("curriculum/reuse_count",
+                           self.training_env.get_attr("reuse_count")[0])
+
+        # Log median reward if available
+        if len(self.model.ep_info_buffer) > 0:
+            rewards = [info["r"] for info in self.model.ep_info_buffer]
+            median_reward = np.median(rewards)
+            self.logger.record("rollout/ep_rew_median", median_reward)
 
         return True
 
@@ -135,7 +144,7 @@ def main():
         OpenAPNavEnv(plane_config, env_config),
         plane_config,
         prob_keep_config=curriculum_config.keep_env_config_prob,
-        max_reuse_count=2,
+        max_reuse_count=3,
         reuse_stages=[4, 5, 6]
     )
 
@@ -145,7 +154,7 @@ def main():
         env,
         verbose=1,
         tensorboard_log=log_dir,
-        learning_rate=3e-4,
+        learning_rate=5e-4,
         ent_coef=0.02,
         n_steps=args.n_steps or 2048,
         batch_size=args.batch_size,

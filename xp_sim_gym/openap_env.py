@@ -88,24 +88,13 @@ class OpenAPNavEnv(gym.Env):
         )
 
     def _setup_initial_state(self):
-        """Setup l'état initial de la simulation OpenAP"""
-        self.steps_taken = 0
-        self.current_waypoint_idx = 1
-        self.previous_offset = 0.0  # Initialize previous offset
-        self.previous_duration = 0.0  # Initialize previous duration
-
-    def set_nominal_route(self, route: list):
-        """Sets the nominal route to follow."""
-        self.nominal_route = route
-
-    def set_wind_config(self, wind_streams: list):
-        """Sets the wind configuration."""
-        self.wind_streams = wind_streams
-
-    def _setup_initial_state(self):
         """Setup the initial state of the OpenAP simulation."""
         self.steps_taken = 0
         self.current_waypoint_idx = 1
+        self.previous_offset = 0.0
+        self.previous_duration = 0.0
+        self.segment_durations = [0.0, 0.0, 0.0]
+        self.all_segment_durations = []
 
         if not self.nominal_route:
             assert self.nominal_route, "Nominal route must be set (via set_nominal_route) before reset/step"
@@ -132,12 +121,18 @@ class OpenAPNavEnv(gym.Env):
         self.wind_u, self.wind_v = self._sample_wind_at(
             self.lat, self.lon, self.alt_m)
 
+    def set_nominal_route(self, route: list):
+        """Sets the nominal route to follow."""
+        self.nominal_route = route
+
+    def set_wind_config(self, wind_streams: list):
+        """Sets the wind configuration."""
+        self.wind_streams = wind_streams
+
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self._setup_initial_state()
-        self.previous_offset = 0.0
-        self.previous_duration = 0.0
-        return self._get_observation(), {}
+        return self._get_observation(), {"segment_durations": [0.0, 0.0, 0.0], "all_segment_durations": []}
 
     def step(self, action):
         # Capture state before simulation for progression reward
@@ -215,7 +210,9 @@ class OpenAPNavEnv(gym.Env):
             "progression": progression_nm,
             "distance_flown": total_distance_m / NM_TO_METER,
             "duration": duration_min,
-            "gs_ms": self.gs_ms
+            "gs_ms": self.gs_ms,
+            "segment_durations": self.segment_durations.copy(),
+            "all_segment_durations": self.all_segment_durations.copy()
         }
 
         return self._get_observation(), reward, terminated, truncated, info
@@ -302,6 +299,7 @@ class OpenAPNavEnv(gym.Env):
             fuel_step = ff_kg_s * current_dt
             self.current_fuel_kg -= fuel_step
             total_fuel_consumed += fuel_step
+            self.segment_durations[2] += (current_dt / 60.0)
 
             # f. Check Waypoint Passing
             self._check_waypoint_progression()
@@ -330,7 +328,7 @@ class OpenAPNavEnv(gym.Env):
         W_XTE_HIGH = -0.5
 
         # 4. Action Smoothing
-        W_DEV_CHANGE = -0.1    # Penalty for flickering the deviation switch
+        W_DEVIATION = -0.2     # Cost of deviating from the nominal course
 
         # --- 1. Progression (The Carrot) ---
         # Reward simply getting closer.
@@ -347,27 +345,34 @@ class OpenAPNavEnv(gym.Env):
         # This replaces your old 'Tailwind' reward but accounts for direction.
         reward_efficiency = 0.0
         if vmg_gain > 0:
-            reward_efficiency = 0.5 * vmg_gain  # Bonus for super-efficiency
+            reward_efficiency = 0.75 * vmg_gain  # Bonus for super-efficiency
         else:
             reward_efficiency = 1.0 * vmg_gain  # Penalty for fighting wind or bad heading
 
         # Scale by duration to make it physically consistent
         reward_efficiency *= (duration_min / 10.0)
 
-        # --- 4. Smart XTE Penalty ---
-        # Allow deviation up to 10 NM with low penalty, then scale up.
-        # This allows the agent to leave the line to find wind without immediate panic.
-        if abs(xte_nm) < 10.0:
+        # --- 5. Deviation Penalty (The "No Reason" Stick) ---
+        # Discourage deviation unless it's worth it.
+        reward_deviation = 0.0
+        if is_deviating:
+            # We penalize based on the magnitude of the deviation requested.
+            # self.previous_offset is the normalized [-1, 1] action.
+            reward_deviation = W_DEVIATION * \
+                abs(self.previous_offset) * duration_min
+
+        # --- 6. Smart XTE Penalty ---
+        # Autoriser la déviation jusqu'à 10NM puis pénaliser plus amplement à partir de ce seuil
+        xte_thresh = self.env_config.flyby_waypoint_dist * 0.5
+        if abs(xte_nm) < xte_thresh:
             reward_xte = W_XTE_BASE * abs(xte_nm) * duration_min
         else:
             # Exponentially harder penalty beyond 10 NM
-            reward_xte = (W_XTE_BASE * 10.0 + W_XTE_HIGH *
-                          (abs(xte_nm) - 10.0)) * duration_min
+            reward_xte = (W_XTE_BASE * xte_thresh + W_XTE_HIGH *
+                          (abs(xte_nm) - xte_thresh)) * duration_min
 
-        # --- 6. Terminal ---
+        # --- 7. Terminal ---
         terminal_reward = 0.0
-        # if terminal_bonus:
-        # terminal_reward = 100.0  # Big finish reward
         if abs(xte_nm) > MAX_XTRACK_ERROR_NM:
             terminal_reward = -100.0  # Crash penalty
 
@@ -376,7 +381,8 @@ class OpenAPNavEnv(gym.Env):
             reward_progress +
             reward_fuel +
             reward_xte +
-            reward_efficiency
+            reward_efficiency +
+            reward_deviation
         )
 
         return step_reward + terminal_reward
@@ -411,6 +417,13 @@ class OpenAPNavEnv(gym.Env):
                     passed_abeam = True
 
             if dist < self.env_config.flyby_waypoint_dist or passed_abeam:
+                # Record duration
+                self.all_segment_durations.append(self.segment_durations[2])
+                
+                # Shift durations: [d1, d2, d3] -> [d2, d3, 0.0]
+                self.segment_durations[0] = self.segment_durations[1]
+                self.segment_durations[1] = self.segment_durations[2]
+                self.segment_durations[2] = 0.0
                 self.current_waypoint_idx += 1
                 # If we passed one, recursively check if we passed the next one too
                 self._check_waypoint_progression()

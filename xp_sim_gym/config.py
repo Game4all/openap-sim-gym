@@ -30,7 +30,7 @@ class EnvironmentConfig(BaseModel):
     """Configuration for the RL Environment simulation."""
 
     # Numbers of waypoints for which to expose information in the observation space
-    lookahead_count: int = 3
+    lookahead_count: int = 4
 
     # Threshold distance the plane must be under to mark a waypoint as visited
     flyby_waypoint_dist: float = 20.0

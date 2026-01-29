@@ -4,6 +4,7 @@ Baseline (AP heading magnétique) vs Modèle PPO
 Même route et même vent pour chaque paire de runs
 """
 
+from xp_sim_gym.route_generator import BenchmarkRouteGenerator
 import numpy as np
 from rich.console import Console
 from rich import box
@@ -90,6 +91,7 @@ def aggregate_relative_diff_stats(rel_diffs):
     return {
         k: {
             "avg": np.mean(v),
+            "med": np.median(v),
             "min": np.max(v),
             "max": np.min(v),
         }
@@ -99,7 +101,6 @@ def aggregate_relative_diff_stats(rel_diffs):
 
 def main():
     N_RUNS = 2000
-    STAGE = 5
 
     keys = ["fuel", "distance", "time", "fuel_per_nm"]
 
@@ -121,9 +122,10 @@ def main():
     baseline_results = []
     model_results = []
 
+    generator = BenchmarkRouteGenerator(plane_config)
+
     for i in tqdm(range(N_RUNS), desc="Running benchmarks"):
-        generator = RouteStageGenerator(plane_config)
-        route, wind_streams = generator.generate(stage=STAGE)
+        route, wind_streams = generator.generate()
 
         # Baseline (AP)
         env_baseline = OpenAPNavEnv(plane_config, env_config)
@@ -162,6 +164,11 @@ def main():
     console.rule("[bold cyan]Benchmark AP vs Modèle PPO [/bold cyan]")
     console.print(f"[dim]({N_RUNS} paired runs)[/dim]\n")
 
+    # Calculer le nombre de fois où le modèle fait mieux que la baseline (fuel_per_nm)
+    wins = sum(1 for m, b in zip(model_results, baseline_results) if m["fuel_per_nm"] < b["fuel_per_nm"])
+    win_rate = (wins / N_RUNS) * 100
+    console.print(f"Modèle PPO a surperformé la baseline [bold green]{wins}/{N_RUNS}[/bold green] fois ([bold]{win_rate:.1f}%[/bold])\n")
+
     table = Table(
         show_header=True,
         header_style="bold magenta",
@@ -170,10 +177,9 @@ def main():
     )
 
     table.add_column("Metric", justify="left", no_wrap=True)
-    table.add_column("Moyenne AP (FMS)", justify="right")
-    table.add_column("Moyenne Modèle PPO", justify="right")
-    table.add_column("Δ Gain Rel Moyen", justify="right")
     table.add_column("Δ Gain Rel Minimum", justify="right")
+    table.add_column("Δ Gain Rel Moyen", justify="right")
+    table.add_column("Δ Gain Rel Médian", justify="right")
     table.add_column("Δ Gain Rel Maximum", justify="right")
 
     def pct(val: float) -> str:
@@ -183,10 +189,9 @@ def main():
     for k in keys:
         table.add_row(
             k,
-            f"{baseline_mean[k]:.4f}",
-            f"{model_mean[k]:.4f}",
-            pct(-rel_mean[k]),
             pct(-rel_stats[k]["min"]),
+            pct(-rel_mean[k]),
+            pct(-rel_stats[k]["med"]),
             pct(-rel_stats[k]["max"]),
         )
 
