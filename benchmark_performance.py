@@ -100,8 +100,7 @@ def aggregate_relative_diff_stats(rel_diffs):
 
 
 def main():
-    N_RUNS = 1000
-    STAGE = 5
+    N_RUNS = 2000
 
     keys = ["fuel", "distance", "time", "fuel_per_nm"]
 
