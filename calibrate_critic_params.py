@@ -1,19 +1,22 @@
 """
-Script pour calibrer les seuils pour le wrapper critique.
+Script pour calibrer les seuils pour le wrapper critique avec optimisation via Optuna.
 """
 
 import numpy as np
 import argparse
+import optuna
 from rich.console import Console
 from rich.table import Table
 from rich import box
-from tqdm.rich import tqdm
+from rich.progress import track
 from stable_baselines3 import PPO
 from xp_sim_gym import OpenAPNavEnv, CriticComparisonWrapper, EnvironmentConfig, PlaneConfig, BenchmarkRouteGenerator
 
+import logging
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+
 
 def run_simulation(env, model=None):
-    """Simulates one route and returns stats."""
     obs, info = env.reset()
     done = False
 
@@ -37,126 +40,197 @@ def run_simulation(env, model=None):
     }
 
 
+class OptimizerObjective:
+    """
+    Class to handle the optimization context (Model, Routes, Baselines)
+    so they aren't re-loaded/re-calculated for every Optuna trial.
+    """
+
+    def __init__(self, model, routes_data, baseline_rates, plane_config, env_config, weights):
+        self.model = model
+        self.routes_data = routes_data
+        self.baseline_rates = baseline_rates
+        self.plane_config = plane_config
+        self.env_config = env_config
+        self.weights = weights
+
+    def __call__(self, trial):
+        threshold = trial.suggest_float("threshold", 0.0, 0.5)
+        gamma = trial.suggest_categorical(
+            "gamma", [0.90, 0.95, 0.98, 0.99, 0.995, 0.999])
+
+        config_improvements = []
+
+
+        for i, (route, wind) in enumerate(self.routes_data):
+            env = OpenAPNavEnv(self.plane_config, self.env_config)
+            env.set_nominal_route(route)
+            env.set_wind_config(wind)
+
+            wrapped_env = CriticComparisonWrapper(
+                env, self.model, threshold=threshold, gamma=gamma)
+
+            stats = run_simulation(wrapped_env, model=self.model)
+            run_rate = stats["fuel_per_nm"]
+            baseline_rate = self.baseline_rates[i]
+
+            imp = (baseline_rate - run_rate) / (baseline_rate + 1e-9)
+            config_improvements.append(imp)
+
+        mean_imp = np.mean(config_improvements) * 100
+        worst_case_imp = np.min(config_improvements) * 100
+        best_case_imp = np.max(config_improvements) * 100
+
+        trial.set_user_attr("mean_imp", mean_imp)
+        trial.set_user_attr("worst_case", worst_case_imp)
+        trial.set_user_attr("best_case", best_case_imp)
+
+        score = (self.weights['mean'] * mean_imp) + \
+                (self.weights['worst'] * worst_case_imp) + \
+                (self.weights['best'] * best_case_imp)
+
+        return score
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Grid search for optimal CriticComparisonWrapper threshold.")
-    parser.add_argument("--min-threshold", type=float,
-                        default=0.0, help="Minimum threshold value")
-    parser.add_argument("--max-threshold", type=float,
-                        default=0.5, help="Maximum threshold value")
-    parser.add_argument("--steps", type=int, default=11,
-                        help="Number of steps in the grid search")
-    parser.add_argument("--gammas", type=float, nargs="+",
-                        default=[0.92, 0.99], help="Gamma values to compare")
-    parser.add_argument("--runs", type=int, default=250,
-                        help="Number of routes to test per threshold")
+        description="Optuna Optimization for CriticComparisonWrapper threshold.")
+
+    parser.add_argument("--n-trials", type=int, default=50,
+                        help="Number of Optuna trials to run")
+    parser.add_argument("--runs", type=int, default=100,
+                        help="Number of routes to test per trial (Batch size)")
+
+    parser.add_argument("--w-mean", type=float, default=1.0,
+                        help="Weight for Mean Gain")
+    parser.add_argument("--w-worst", type=float, default=2.0,
+                        help="Weight for Worst-Case")
+    parser.add_argument("--w-best", type=float, default=0.5,
+                        help="Weight for Best-Case")
+
     args = parser.parse_args()
 
-    console = Console()
-    console.rule("[bold cyan]Threshold & Gamma Grid Search[/bold cyan]")
+    weights = {
+        "mean": args.w_mean,
+        "worst": args.w_worst,
+        "best": args.w_best
+    }
 
-    # 1. Config & Model
+    console = Console()
+    console.rule("[bold cyan]Calibration des seuils du critique PPO[/bold cyan]")
+    console.print(
+        f"Weights -> Mean: {args.w_mean}, Worst: {args.w_worst}, Best: {args.w_best}")
+    console.print(f"Trials: {args.n_trials} | Routes per Trial: {args.runs}\n")
+
     plane_config = PlaneConfig(
         aircraft_type="A320", initial_lat=48.8566, initial_lon=2.3522)
     env_config = EnvironmentConfig()
     model_path = "ppo_flight_deviation_pretrained.zip"
 
     try:
-        model = PPO.load(model_path)
+        model = PPO.load(model_path, device="cpu")
         model.policy.set_training_mode(False)
         console.print(f"Loaded PPO model from {model_path}")
     except Exception as e:
         console.print(f"[bold red]Error loading model: {e}[/bold red]")
         return
 
-    # 2. Pre-generate routes
     console.print(f"Generating {args.runs} benchmark routes...")
     generator = BenchmarkRouteGenerator(plane_config)
     routes_data = [generator.generate() for _ in range(args.runs)]
 
-    # 3. Baseline calculation (FMS only)
-    console.print("Calculating FMS Baseline...")
+    console.print("Calculating FMS Baseline...", style="yellow")
     fms_fuel_rates = []
-    for route, wind in tqdm(routes_data, desc="Baseline"):
+
+    for route, wind in track(routes_data, description="Running Baseline..."):
         env = OpenAPNavEnv(plane_config, env_config)
         env.set_nominal_route(route)
         env.set_wind_config(wind)
         stats = run_simulation(env, model=None)
         fms_fuel_rates.append(stats["fuel_per_nm"])
 
+    avg_baseline = np.mean(fms_fuel_rates)
+    console.print(f"Baseline Avg Fuel/NM: [bold]{avg_baseline:.4f}[/bold]\n")
+
     console.print(
-        f"Baseline Avg Fuel/NM: [bold]{np.mean(fms_fuel_rates):.4f}[/bold]\n")
+        f"[bold green]Starting Optimization ({args.n_trials} trials)...[/bold green]")
 
-    # 4. Grid Search
-    thresholds = np.linspace(
-        args.min_threshold, args.max_threshold, args.steps)
-    results = []
+    objective = OptimizerObjective(
+        model, routes_data, fms_fuel_rates, plane_config, env_config, weights
+    )
 
-    for gamma in args.gammas:
-        console.print(f"\n[bold magenta]Testing Gamma: {gamma}[/bold magenta]")
-        for thresh in thresholds:
-            thresh = round(float(thresh), 4)
-            console.print(f"  Threshold: [yellow]{thresh}[/yellow]")
-            config_improvements = []
+    study = optuna.create_study(
+        direction="maximize", sampler=optuna.samplers.TPESampler())
 
-            for i, (route, wind) in enumerate(tqdm(routes_data, desc=f"G={gamma}, T={thresh}")):
-                env = OpenAPNavEnv(plane_config, env_config)
-                env.set_nominal_route(route)
-                env.set_wind_config(wind)
-                # Wrap with the current threshold and gamma
-                wrapped_env = CriticComparisonWrapper(
-                    env, model, threshold=thresh, gamma=gamma)
+    with tqdm_optuna(total=args.n_trials, desc="Optimizing") as pbar:
+        def callback(study, trial):
+            pbar.update(1)
+            pbar.set_postfix({"Best Score": f"{study.best_value:.2f}"})
 
-                stats = run_simulation(wrapped_env, model=model)
-                run_rate = stats["fuel_per_nm"]
-                baseline_rate = fms_fuel_rates[i]
+        study.optimize(objective, n_trials=args.n_trials, callbacks=[callback])
 
-                # Improvement for this specific run
-                imp = (baseline_rate - run_rate) / (baseline_rate + 1e-9)
-                config_improvements.append(imp)
 
-            mean_imp = np.mean(config_improvements)
-            worst_case_imp = np.min(config_improvements)
+    best_trial = study.best_trial
 
-            results.append({
-                "gamma": gamma,
-                "threshold": thresh,
-                "mean_improvement": mean_imp * 100,
-                "worst_case_improvement": worst_case_imp * 100
-            })
+    console.print(
+        f"\n[bold green]Meilleur essai (Score: {best_trial.value:.2f}):[/bold green]")
+    console.print(
+        f"  Threshold: [yellow]{best_trial.params['threshold']:.4f}[/yellow]")
+    console.print(
+        f"  Gamma:     [yellow]{best_trial.params['gamma']}[/yellow]")
 
-    # 5. Display Results
-    table = Table(title="Threshold & Gamma Search (Risk-Based)",
-                  box=box.ROUNDED)
-    table.add_column("Gamma", justify="center")
-    table.add_column("Threshold", justify="center")
-    table.add_column("Mean Gain (%)", justify="right")
-    table.add_column("Worst-Case Gain (%)", justify="right")
+    console.print("\n[bold]Métriques du meilleur essai:[/bold]")
+    console.print(f"  Mean Gain:  {best_trial.user_attrs['mean_imp']:.2f}%")
+    console.print(f"  Worst Case: {best_trial.user_attrs['worst_case']:.2f}%")
+    console.print(f"  Best Case:  {best_trial.user_attrs['best_case']:.2f}%")
 
-    best_config = None
-    max_worst_case = -float('inf')
+    # Show top 5 trials
+    console.print("\n[bold]Top 5 Configurations:[/bold]")
+    table = Table(box=box.ROUNDED)
+    table.add_column("Rank", justify="center")
+    table.add_column("Score", justify="right", style="magenta")
+    table.add_column("Threshold", justify="right", style="cyan")
+    table.add_column("Gamma", justify="right")
+    table.add_column("Mean %", justify="right")
+    table.add_column("Worst %", justify="right")
 
-    for r in results:
-        mean_c = "green" if r['mean_improvement'] > 0 else "red"
-        worst_c = "green" if r['worst_case_improvement'] >= 0 else "red"
+    # Sort trials by value
+    completed_trials = [t for t in study.trials if t.state ==
+                        optuna.trial.TrialState.COMPLETE]
+    top_trials = sorted(
+        completed_trials, key=lambda t: t.value, reverse=True)[:5]
 
-        # We optimize for the "least bad" worst case (max the min)
-        if r['worst_case_improvement'] > max_worst_case:
-            max_worst_case = r['worst_case_improvement']
-            best_config = (r['gamma'], r['threshold'], r['mean_improvement'])
+    for rank, t in enumerate(top_trials, 1):
+        mean_v = t.user_attrs.get('mean_imp', 0)
+        worst_v = t.user_attrs.get('worst_case', 0)
+
+        c_worst = "red" if worst_v < - \
+            5 else ("yellow" if worst_v < 0 else "green")
 
         table.add_row(
-            str(r['gamma']),
-            str(r['threshold']),
-            f"[{mean_c}]{r['mean_improvement']:.2f}%[/{mean_c}]",
-            f"[{worst_c}]{r['worst_case_improvement']:.2f}%[/{worst_c}]"
+            str(rank),
+            f"{t.value:.2f}",
+            f"{t.params['threshold']:.4f}",
+            str(t.params['gamma']),
+            f"{mean_v:.2f}%",
+            f"[{c_worst}]{worst_v:.2f}%[/{c_worst}]"
         )
 
     console.print(table)
-    console.print(
-        f"\n[bold green]Optimal risk-based configuration found: Gamma={best_config[0]}, Threshold={best_config[1]}[/bold green]")
-    console.print(
-        f"[bold green]Worst-case Gain: {max_worst_case:.2f}%, Mean Gain: {best_config[2]:.2f}%[/bold green]")
+
+# Helper for Optuna progress bar
+
+
+class tqdm_optuna:
+    def __init__(self, total, desc="Optimizing"):
+        from tqdm.rich import tqdm
+        self.pbar = tqdm(total=total, desc=desc)
+
+    def __enter__(self):
+        return self.pbar
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.pbar.close()
 
 
 if __name__ == "__main__":
