@@ -8,11 +8,8 @@ import argparse
 import numpy as np
 import gymnasium as gym
 from stable_baselines3 import PPO
-
-from xp_sim_gym.openap_env import OpenAPNavEnv
+from xp_sim_gym import CriticComparisonWrapper, OpenAPNavEnv, EnvironmentConfig, PlaneConfig, RouteStageGenerator, BenchmarkRouteGenerator
 from xp_sim_gym.viz_wrapper import MultiEnvViz
-from xp_sim_gym.config import EnvironmentConfig, PlaneConfig
-from xp_sim_gym.route_generator import RouteStageGenerator, BenchmarkRouteGenerator
 
 
 def main():
@@ -49,9 +46,12 @@ def main():
     model = None
     try:
         model = PPO.load(args.model_path)
+        model.policy.set_training_mode(False)
         print(f"Loaded model from {args.model_path}")
     except Exception as e:
         print(f"Error loading model: {e}")
+
+    env_model = CriticComparisonWrapper(env_model, model, 0.99)
 
     # 4. Setup Multi-Env Visualization
     viz = MultiEnvViz(
@@ -79,8 +79,7 @@ def main():
 
             # 1. Step Autopilot if not done
             if not done_ap:
-                action_ap = np.zeros(
-                    env_ap.action_space.shape, dtype=np.float32)
+                action_ap = np.array([0.0, -1.0])
                 obs_ap, r_ap, term_ap, trunc_ap, info_ap = env_ap.step(
                     action_ap)
                 viz.update_env_info(0, info_ap)

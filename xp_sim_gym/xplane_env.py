@@ -5,7 +5,7 @@ import math
 import time
 from .utils import GeoUtils
 from .constants import (
-    MAX_DEVIATION_SEGMENTS, MAX_XTRACK_ERROR_NM, DT_DECISION,
+    MAX_DEVIATION_SEGMENTS, MAX_XTRACK_ERROR_NM,
     MAX_ALT, MAX_SPD, MAX_FUEL, MAX_WIND, MAX_DIST
 )
 

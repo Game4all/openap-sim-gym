@@ -4,16 +4,13 @@ Baseline (AP heading magnétique) vs Modèle PPO
 Même route et même vent pour chaque paire de runs
 """
 
-from xp_sim_gym.route_generator import BenchmarkRouteGenerator
 import numpy as np
 from rich.console import Console
 from rich import box
 from rich.table import Table
 from tqdm.rich import tqdm
 from stable_baselines3 import PPO
-from xp_sim_gym.openap_env import OpenAPNavEnv
-from xp_sim_gym.config import EnvironmentConfig, PlaneConfig
-from xp_sim_gym.route_generator import RouteStageGenerator
+from xp_sim_gym import OpenAPNavEnv, CriticComparisonWrapper, EnvironmentConfig, PlaneConfig,  RouteStageGenerator, BenchmarkRouteGenerator
 
 
 def run_simulation(env, model=None):
@@ -48,7 +45,8 @@ def run_simulation(env, model=None):
 
         steps += 1
 
-    success = env.current_waypoint_idx >= len(env.nominal_route)
+    success = env.get_wrapper_attr("current_waypoint_idx") >= len(
+        env.get_wrapper_attr("nominal_route"))
 
     return {
         "reward": total_reward,
@@ -114,6 +112,7 @@ def main():
     model_path = "ppo_flight_deviation_pretrained.zip"
     try:
         model = PPO.load(model_path)
+        model.policy.set_training_mode(False)
         print(f"Loaded PPO model from {model_path}")
     except Exception as e:
         print(f"Failed to load model: {e}")
@@ -138,6 +137,7 @@ def main():
         env_model = OpenAPNavEnv(plane_config, env_config)
         env_model.set_nominal_route(route)
         env_model.set_wind_config(wind_streams)
+        env_model = CriticComparisonWrapper(env_model, model, 0.3, gamma=0.92)
         model_stats = run_simulation(env_model, model=model)
 
         baseline_results.append(baseline_stats)
@@ -165,9 +165,11 @@ def main():
     console.print(f"[dim]({N_RUNS} paired runs)[/dim]\n")
 
     # Calculer le nombre de fois où le modèle fait mieux que la baseline (fuel_per_nm)
-    wins = sum(1 for m, b in zip(model_results, baseline_results) if m["fuel_per_nm"] < b["fuel_per_nm"])
+    wins = sum(1 for m, b in zip(model_results, baseline_results)
+               if m["fuel_per_nm"] < b["fuel_per_nm"])
     win_rate = (wins / N_RUNS) * 100
-    console.print(f"Modèle PPO a surperformé la baseline [bold green]{wins}/{N_RUNS}[/bold green] fois ([bold]{win_rate:.1f}%[/bold])\n")
+    console.print(
+        f"Modèle PPO a surperformé la baseline [bold green]{wins}/{N_RUNS}[/bold green] fois ([bold]{win_rate:.1f}%[/bold])\n")
 
     table = Table(
         show_header=True,

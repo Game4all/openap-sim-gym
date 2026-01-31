@@ -1,4 +1,4 @@
-import gymnasium as gym
+﻿import gymnasium as gym
 import numpy as np
 import pygame
 import math
@@ -28,6 +28,7 @@ class BaseViz:
         self.lon_max = None
         self.lat_min = None
         self.lat_max = None
+        self.show_segment_times = True
 
     def _calculate_bounds(self, envs_data):
         """
@@ -109,7 +110,7 @@ class BaseViz:
             p2 = self._to_pixel(self.lat_max, lon)
             pygame.draw.line(self.screen, grid_color, p1, p2, 1)
 
-    def _draw_nominal_route(self, route, current_wp_idx, durations=None, color=(70, 70, 100), label_color=(200, 200, 200), label_offset=(5, 5), draw_route=True):
+    def _draw_nominal_route(self, route, current_wp_idx, durations=None, color=(70, 70, 100), label_color=(200, 200, 200), label_offset=(5, 5), draw_route=True, is_delta=False):
         if route:
             points = [self._to_pixel(wp['lat'], wp['lon']) for wp in route]
             if draw_route and len(points) > 1:
@@ -121,24 +122,43 @@ class BaseViz:
                     pygame.draw.rect(self.screen, wp_color, (p[0]-3, p[1]-3, 6, 6))
                 
                 # Draw segment duration if available (skip start point)
-                if durations and i > 0 and i <= len(durations):
+                if self.show_segment_times and durations and i > 0 and i <= len(durations):
                     dur_val = durations[i-1]
-                    dur_text = self.small_font.render(f"{dur_val:.1f}m", True, label_color)
+                    
+                    final_color = label_color
+                    text_content = f"{dur_val:.1f}m"
+                    
+                    if is_delta:
+                        if dur_val > 0.01:
+                            final_color = (255, 100, 100) # Red-ish for gain
+                            text_content = f"+{dur_val:.1f}m"
+                        elif dur_val < -0.01:
+                            final_color = (100, 255, 100) # Green-ish for loss
+                            text_content = f"{dur_val:.1f}m"
+                        else:
+                            final_color = (200, 200, 200)
+
+                    dur_text = self.small_font.render(text_content, True, final_color)
                     # Create a semi-transparent surface for the text
                     dur_text.set_alpha(180) 
                     self.screen.blit(dur_text, (p[0] + label_offset[0], p[1] + label_offset[1]))
 
     def _draw_wind_field(self, env):
-        if hasattr(env, 'wind_streams') or hasattr(env, 'unwrapped') and hasattr(env.unwrapped, 'wind_streams'):
-            # Accessing from unwrapped if it's a wrapper
-            inner_env = env.unwrapped if hasattr(env, 'unwrapped') else env
-            
+        # Use get_wrapper_attr to check and access wind data across nested wrappers
+        try:
+            wind_streams = env.get_wrapper_attr('wind_streams')
+            alt_m = env.get_wrapper_attr('alt_m')
+            sample_fn = env.get_wrapper_attr('_sample_wind_at')
+        except AttributeError:
+            return
+
+        if wind_streams:
             grid_step_lat = (self.lat_max - self.lat_min) / 10.0
             grid_step_lon = (self.lon_max - self.lon_min) / 10.0
 
             for lat in np.arange(self.lat_min, self.lat_max, grid_step_lat):
                 for lon in np.arange(self.lon_min, self.lon_max, grid_step_lon):
-                    u, v = inner_env._sample_wind_at(lat, lon, inner_env.alt_m)
+                    u, v = sample_fn(lat, lon, alt_m)
                     if abs(u) > 1.0 or abs(v) > 1.0:
                         px, py = self._to_pixel(lat, lon)
                         spd_ms = math.sqrt(u**2 + v**2)
@@ -155,6 +175,13 @@ class BaseViz:
                         color = (min(255, max(0, r)), min(255, max(0, g)), min(255, max(0, b)))
                         pygame.draw.line(self.screen, color, start_p, end_p, 3)
                         pygame.draw.circle(self.screen, color, start_p, 3)
+
+    def _iter_wrappers(self, env):
+        """Helper to iterate through nested wrappers."""
+        yield env
+        while hasattr(env, 'env'):
+            env = env.env
+            yield env
 
     def _draw_plane(self, lat, lon, heading, color=(255, 255, 0), label=None):
         plane_px = self._to_pixel(lat, lon)
@@ -189,7 +216,7 @@ class OpenAPVizWrapper(gym.Wrapper, BaseViz):
         self.trajectory = []
 
     def step(self, action):
-        self.trajectory.append((self.env.lat, self.env.lon))
+        self.trajectory.append((self.env.get_wrapper_attr('lat'), self.env.get_wrapper_attr('lon')))
         obs, reward, terminated, truncated, info = self.env.step(action)
         duration_min = info.get("duration", 5.0)
         self.last_action_duration = duration_min
@@ -210,10 +237,10 @@ class OpenAPVizWrapper(gym.Wrapper, BaseViz):
 
     def _get_env_data(self):
         return {
-            'lat': self.env.lat,
-            'lon': self.env.lon,
-            'nominal_route': getattr(self.env, 'nominal_route', []),
-            'trajectory': self.trajectory + [(self.env.lat, self.env.lon)]
+            'lat': self.env.get_wrapper_attr('lat'),
+            'lon': self.env.get_wrapper_attr('lon'),
+            'nominal_route': self.env.get_wrapper_attr('nominal_route'),
+            'trajectory': self.trajectory + [(self.env.get_wrapper_attr('lat'), self.env.get_wrapper_attr('lon'))]
         }
 
     def render(self):
@@ -225,23 +252,26 @@ class OpenAPVizWrapper(gym.Wrapper, BaseViz):
                 pygame.quit()
                 self.screen = None
                 return
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_t:
+                    self.show_segment_times = not self.show_segment_times
 
         self._draw_background()
-        self._draw_nominal_route(getattr(self.env, 'nominal_route', []), self.env.current_waypoint_idx, self.all_segment_durations)
-        self._draw_trajectory(self.trajectory + [(self.env.lat, self.env.lon)])
+        self._draw_nominal_route(self.env.get_wrapper_attr('nominal_route'), self.env.get_wrapper_attr('current_waypoint_idx'), self.all_segment_durations)
+        self._draw_trajectory(self.trajectory + [(self.env.get_wrapper_attr('lat'), self.env.get_wrapper_attr('lon'))])
         self._draw_wind_field(self.env)
-        self._draw_plane(self.env.lat, self.env.lon, self.env.heading_mag)
+        self._draw_plane(self.env.get_wrapper_attr('lat'), self.env.get_wrapper_attr('lon'), self.env.get_wrapper_attr('heading_mag'))
 
         # Info text
         info_lines = [
-            f"Cap (HDG): {int(self.env.heading_mag)}°",
-            f"Ecart Lat (XTE): {self.env._calculate_xte():.2f} NM",
-            f"Dist Parcours (ATE): {self.env._calculate_atd():.2f} NM",
+            f"Cap (HDG): {int(self.env.get_wrapper_attr('heading_mag'))}°",
+            f"Ecart Lat (XTE): {self.env.get_wrapper_attr('_calculate_xte')():.2f} NM",
+            f"Dist Parcours (ATE): {self.env.get_wrapper_attr('_calculate_atd')():.2f} NM",
             f"Durée Totale: {self.total_duration_min:.1f} min",
             f"Segments (Last 3): {' / '.join([f'{d:.1f}' for d in self.last_segment_durations])}",
-            f"Carburant: {int(self.env.current_fuel_kg)} kg",
-            f"Vitesse TAS: {int(self.env.tas_ms / KTS_TO_M_S)} kts",
-            f"Vitesse GS: {int(self.env.gs_ms / KTS_TO_M_S)} kts",
+            f"Carburant: {int(self.env.get_wrapper_attr('current_fuel_kg'))} kg",
+            f"Vitesse TAS: {int(self.env.get_wrapper_attr('tas_ms') / KTS_TO_M_S)} kts",
+            f"Vitesse GS: {int(self.env.get_wrapper_attr('gs_ms') / KTS_TO_M_S)} kts",
         ]
         for i, line in enumerate(info_lines):
             text = self.font.render(line, True, (255, 255, 255))
@@ -285,7 +315,7 @@ class MultiEnvViz(BaseViz):
     def update_env_info(self, idx, info):
         """Called after a step in one of the envs to update tracking info."""
         env = self.envs[idx]
-        self.trajectories[idx].append((env.lat, env.lon))
+        self.trajectories[idx].append((env.get_wrapper_attr('lat'), env.get_wrapper_attr('lon')))
         duration = info.get("duration", 5.0)
         self.total_durations[idx] += duration
         self.last_durations[idx] = duration
@@ -293,17 +323,17 @@ class MultiEnvViz(BaseViz):
         self.all_segment_durations_history[idx] = info.get("all_segment_durations", [])
         
         # Track history for averages
-        self.xte_history[idx].append(abs(env._calculate_xte()))
-        self.gs_history[idx].append(env.gs_ms / KTS_TO_M_S)
+        self.xte_history[idx].append(abs(env.get_wrapper_attr('_calculate_xte')()))
+        self.gs_history[idx].append(env.get_wrapper_attr('gs_ms') / KTS_TO_M_S)
 
     def _get_envs_data(self):
         data = []
         for i, env in enumerate(self.envs):
             data.append({
-                'lat': env.lat,
-                'lon': env.lon,
-                'nominal_route': getattr(env, 'nominal_route', []),
-                'trajectory': self.trajectories[i] + [(env.lat, env.lon)]
+                'lat': env.get_wrapper_attr('lat'),
+                'lon': env.get_wrapper_attr('lon'),
+                'nominal_route': env.get_wrapper_attr('nominal_route'),
+                'trajectory': self.trajectories[i] + [(env.get_wrapper_attr('lat'), env.get_wrapper_attr('lon'))]
             })
         return data
 
@@ -316,14 +346,17 @@ class MultiEnvViz(BaseViz):
                 pygame.quit()
                 self.screen = None
                 return
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_t:
+                    self.show_segment_times = not self.show_segment_times
 
         self._draw_background()
         
         # 1. Draw nominal route (assume all envs share the same route for benchmarking)
         if self.envs:
             # Draw the static route first
-            common_route = getattr(self.envs[0], 'nominal_route', [])
-            self._draw_nominal_route(common_route, getattr(self.envs[0], 'current_waypoint_idx', 0))
+            common_route = self.envs[0].get_wrapper_attr('nominal_route')
+            self._draw_nominal_route(common_route, self.envs[0].get_wrapper_attr('current_waypoint_idx'))
             
             # Use small offsets for each plane's duration labels
             for i, env in enumerate(self.envs):
@@ -337,14 +370,33 @@ class MultiEnvViz(BaseViz):
                     label_offset=(5, offset_y),
                     draw_route=False
                 )
+            
+            # 3. Calculate and draw delta if exactly 2 envs (Baseline vs Agent)
+            if len(self.envs) == 2:
+                ap_history = self.all_segment_durations_history[0]
+                md_history = self.all_segment_durations_history[1]
+                
+                # Combine based on shortest history to avoid index errors
+                min_len = min(len(ap_history), len(md_history))
+                deltas = [md_history[j] - ap_history[j] for j in range(min_len)]
+                
+                offset_y = 5 + (2 * 15)
+                self._draw_nominal_route(
+                    route=common_route,
+                    current_wp_idx=-1,
+                    durations=deltas,
+                    label_offset=(5, offset_y),
+                    draw_route=False,
+                    is_delta=True
+                )
 
             self._draw_wind_field(self.envs[0])
 
         # 2. Draw each plane and its trajectory
         for i, env in enumerate(self.envs):
-            traj = self.trajectories[i] + [(env.lat, env.lon)]
+            traj = self.trajectories[i] + [(env.get_wrapper_attr('lat'), env.get_wrapper_attr('lon'))]
             self._draw_trajectory(traj, self.colors[i])
-            self._draw_plane(env.lat, env.lon, env.heading_mag, self.colors[i], self.labels[i])
+            self._draw_plane(env.get_wrapper_attr('lat'), env.get_wrapper_attr('lon'), env.get_wrapper_attr('heading_mag'), self.colors[i], self.labels[i])
 
         # 3. Draw Info Table
         header_font = pygame.font.SysFont("Arial", 16, bold=True)
@@ -381,6 +433,7 @@ class MultiEnvViz(BaseViz):
             
             durs = self.segment_durations_history[i]
             seg_str = f"{durs[0]:.1f} / {durs[1]:.1f} / {durs[2]:.1f}"
+            fuel_kg = env.get_wrapper_attr("current_fuel_kg")
             
             values = [
                 self.labels[i],
@@ -388,7 +441,7 @@ class MultiEnvViz(BaseViz):
                 seg_str,
                 xte_str,
                 gs_str,
-                f"{int(env.current_fuel_kg)}"
+                f"{int(fuel_kg)}"
             ]
             for j, val in enumerate(values):
                 txt = self.font.render(val, True, self.colors[i])
