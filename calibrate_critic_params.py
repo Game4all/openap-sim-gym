@@ -1,5 +1,5 @@
 """
-Script pour calibrer les seuils pour le wrapper critique avec optimisation via Optuna.
+Script to calibrate thresholds for the critic wrapper using Optuna optimization.
 """
 
 import numpy as np
@@ -117,7 +117,7 @@ def main():
     }
 
     console = Console()
-    console.rule("[bold cyan]Calibration des seuils du critique PPO[/bold cyan]")
+    console.rule("[bold cyan]Calibrating PPO Critic Thresholds[/bold cyan]")
     console.print(
         f"Weights -> Mean: {args.w_mean}, Worst: {args.w_worst}, Best: {args.w_best}")
     console.print(f"Trials: {args.n_trials} | Routes per Trial: {args.runs}\n")
@@ -173,13 +173,13 @@ def main():
     best_trial = study.best_trial
 
     console.print(
-        f"\n[bold green]Meilleur essai (Score: {best_trial.value:.2f}):[/bold green]")
+        f"\n[bold green]Best Trial (Score: {best_trial.value:.2f}):[/bold green]")
     console.print(
         f"  Threshold: [yellow]{best_trial.params['threshold']:.4f}[/yellow]")
     console.print(
         f"  Gamma:     [yellow]{best_trial.params['gamma']}[/yellow]")
 
-    console.print("\n[bold]Métriques du meilleur essai:[/bold]")
+    console.print("\n[bold]Best Trial Metrics:[/bold]")
     console.print(f"  Mean Gain:  {best_trial.user_attrs['mean_imp']:.2f}%")
     console.print(f"  Worst Case: {best_trial.user_attrs['worst_case']:.2f}%")
     console.print(f"  Best Case:  {best_trial.user_attrs['best_case']:.2f}%")

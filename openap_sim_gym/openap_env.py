@@ -3,7 +3,7 @@ from gymnasium import spaces
 import numpy as np
 import math
 from openap import FuelFlow
-from xp_sim_gym.config import PlaneConfig, EnvironmentConfig
+from .config import PlaneConfig, EnvironmentConfig
 from .utils import GeoUtils
 
 from .constants import (
@@ -16,45 +16,45 @@ from .constants import (
 
 class OpenAPNavEnv(gym.Env):
     """
-    Un environement gymnasium utilisant OpenAP pour simuler un avion pour apprendre à naviguer en conditions de vent. 
+    A gymnasium environment using OpenAP to simulate an aircraft for navigation learning in wind conditions.
 
     **Observations:**
-    Vecteur numpy avec `9 + 4 + (4 * lookahead_count)`.
-    *Note : Toutes les altitudes sont en **mètres**.*
+    Numpy vector with `9 + 4 + (4 * lookahead_count)`.
+    *Note: All altitudes are in **meters**.*
 
-    1.  **État de l'Avion (9)** :
-        *   `norm_alt` : Altitude actuelle / MAX_ALT (45,000 ft)
-        *   `norm_tas` : Vitesse Vraie (TAS) / MAX_SPD (600 kts)
-        *   `norm_gs` : Vitesse Sol (GS) / MAX_SPD (600 kts)
-        *   `norm_fuel` : Quantité de Carburant / MAX_FUEL (20,000 kg)
-        *   `norm_wfwd` : Vent longitudinal relatif à l'avion / MAX_WIND
-        *   `norm_wrgt` : Vent latéral relatif à l'avion / MAX_WIND
-        *   `applied_offset` : La dernière action de déviation demandée (normalisée [-1, 1]).
-        *   `applied_duration` : La dernière durée demandée (normalisée [-1, 1]).
-        *   `norm_auto_heading` : Le cap cible du pilote automatique (cap vers le prochain waypoint), normalisé [-1, 1].
+    1.  **Aircraft State (9)**:
+        *   `norm_alt`: Current altitude / MAX_ALT (45,000 ft)
+        *   `norm_tas`: True Airspeed (TAS) / MAX_SPD (600 kts)
+        *   `norm_gs`: Ground Speed (GS) / MAX_SPD (600 kts)
+        *   `norm_fuel`: Fuel quantity / MAX_FUEL (20,000 kg)
+        *   `norm_wfwd`: Longitudinal wind relative to the aircraft / MAX_WIND
+        *   `norm_wrgt`: Lateral wind relative to the aircraft / MAX_WIND
+        *   `applied_offset`: Last requested deviation action (normalized [-1, 1]).
+        *   `applied_duration`: Last requested duration action (normalized [-1, 1]).
+        *   `norm_auto_heading`: Autopilot target heading (towards next waypoint), normalized [-1, 1].
 
-    2.  **Contexte de la Route (4)** :
-        *   `xte` : Erreur Latérale (Cross-Track Error) / MAX_XTRACK_ERROR_NM (50 NM)
-        *   `dist_to_wpt` : Distance au prochain waypoint / MAX_DIST (1000 NM)
-        *   `track_angle_error` : Erreur d'angle de route (Track vs Bearing) / 180 degrés.
-        *   `dist_to_dest` : Distance à la destination / (2 * MAX_DIST)
+    2.  **Route Context (4)**:
+        *   `xte`: Cross-Track Error / MAX_XTRACK_ERROR_NM (50 NM)
+        *   `dist_to_wpt`: Distance to the next waypoint / MAX_DIST (1000 NM)
+        *   `track_angle_error`: Track angle error (Track vs Bearing) / 180 degrees.
+        *   `dist_to_dest`: Distance to destination / (2 * MAX_DIST)
 
-    3.  **Anticipation (Lookahead) (4 * N)** : 
-        Pour chacun des `N` (par défaut 3) prochains waypoints :
-        *   `d` : Distance depuis l'avion / MAX_DIST
-        *   `rel_b` : Relèvement relatif / 180 degrés
-        *   `along` : Composante de vent longitudinale / MAX_WIND
-        *   `cross` : Composante de vent latérale / MAX_WIND
+    3.  **Lookahead (4 * N)**: 
+        For each of the `N` (default 3) next waypoints:
+        *   `d`: Distance from the aircraft / MAX_DIST
+        *   `rel_b`: Relative bearing / 180 degrees
+        *   `along`: Longitudinal wind component / MAX_WIND
+        *   `cross`: Lateral wind component / MAX_WIND
 
     **Actions:**
-    Un vecteur de 2 éléments normalisé entre [-1.0, 1.0] :
-    1.  `Heading Offset` : Déviation par rapport au cap **autonome** (vers le prochain waypoint). 
-        *   0 => Voler directement vers le waypoint.
-        *   Normalisé sur [MIN_HEADING_OFFSET, MAX_HEADING_OFFSET] degrés.
-    2.  `Duration` : Durée de l'action avant le prochain pas de décision.
-        *   Normalisé sur [MIN_DURATION_MIN, MAX_DURATION_MIN] minutes.
+    A vector of 2 elements normalized between [-1.0, 1.0]:
+    1.  `Heading Offset`: Deviation from the **autonomous** heading (towards next waypoint). 
+        *   0 => Fly directly towards the waypoint.
+        *   Normalized on [MIN_HEADING_OFFSET, MAX_HEADING_OFFSET] degrees.
+    2.  `Duration`: Duration of the action before the next decision step.
+        *   Normalized on [MIN_DURATION_MIN, MAX_DURATION_MIN] minutes.
 
-    La simulation utilise des sous-pas d'une minute pour la physique.
+    The simulation uses one-minute sub-steps for physics integration.
     """
     metadata = {"render_modes": [], "render_fps": 1}
 
@@ -321,13 +321,12 @@ class OpenAPNavEnv(gym.Env):
 
     def _integrate_physics(self, duration_sec, heading_offset_deg, state=None):
         """
-        Integrates the flight physics for a given duration.
-        Returns:
+        Intègre la physique du vol pour une durée donnée.
+        Retourne :
             fuel_consumed (kg)
-            total_distance_m (meters flown)
+            total_distance_m (mètres parcourus)
             updated_state (dict)
         """
-        # If no state is provided, initialize from current environment state
         if state is None:
             state = {
                 'lat': self.lat,
@@ -355,11 +354,9 @@ class OpenAPNavEnv(gym.Env):
         while remaining_time > 0:
             current_dt = min(dt_sim, remaining_time)
 
-            # Update wind at current position
             state['wind_u'], state['wind_v'] = self._sample_wind_at(
                 state['lat'], state['lon'], state['alt_m'])
 
-            # a. Calculate Auto Heading (Dynamic per sub-step)
             if state['current_waypoint_idx'] < len(self.nominal_route):
                 target_wp = self.nominal_route[state['current_waypoint_idx']]
                 auto_heading = GeoUtils.bearing(
@@ -367,14 +364,10 @@ class OpenAPNavEnv(gym.Env):
             else:
                 auto_heading = state['heading_mag']
 
-            # b. Determine Target Heading
             target_heading = (auto_heading + heading_offset_deg) % 360.0
 
-            # c. Apply Rate Limit to Heading Change
-            # Calculate smallest difference
             diff = (target_heading - state['heading_mag'] + 180) % 360 - 180
 
-            # Max change for this timestep
             max_change = turn_rate_deg_min * current_dt
 
             if abs(diff) <= max_change:
@@ -383,26 +376,23 @@ class OpenAPNavEnv(gym.Env):
                 state['heading_mag'] += math.copysign(max_change, diff)
                 state['heading_mag'] %= 360.0
 
-            # d. Kinematics (for current_dt)
             heading_rad = math.radians(state['heading_mag'])
 
-            # TAS vector
             tas_n = state['tas_ms'] * math.cos(heading_rad)
             tas_e = state['tas_ms'] * math.sin(heading_rad)
 
-            # Ground Speed vector
             gs_n = tas_n + state['wind_v']
             gs_e = tas_e + state['wind_u']
 
             state['gs_ms'] = math.sqrt(gs_e**2 + gs_n**2)
             track_rad = math.atan2(gs_e, gs_n)
 
-            # Distance flown in this sub-step
+            # Distance parcourue durant la sous-étape
             dist_m = state['gs_ms'] * current_dt
             dist_nm = dist_m / NM_TO_METER
             total_distance_m += dist_m
 
-            # Update Position
+            # Mise à jour de la position
             delta_lat = (dist_nm * math.cos(track_rad)) / 60.0
             state['lat'] += delta_lat
 
@@ -410,7 +400,7 @@ class OpenAPNavEnv(gym.Env):
                 (60.0 * math.cos(math.radians(state['lat'])))
             state['lon'] += delta_lon
 
-            # e. Fuel Consumption (for current_dt)
+            # Fuel Consumption (for current_dt)
             ff_kg_s = self.fuel_flow_model.enroute(
                 mass=state['current_fuel_kg'] + 40000,
                 tas=state['tas_ms'] / KTS_TO_M_S,
@@ -481,7 +471,7 @@ class OpenAPNavEnv(gym.Env):
                 abs(applied_offset) * duration_min
 
         # --- 6. Smart XTE Penalty ---
-        # Autoriser la déviation jusqu'à 10NM puis pénaliser plus amplement à partir de ce seuil
+        # Allow deviation up to a threshold, then penalize more heavily beyond it
         xte_thresh = self.env_config.flyby_waypoint_dist * 0.5
         if abs(xte_nm) < xte_thresh:
             reward_xte = W_XTE_BASE * abs(xte_nm) * duration_min
@@ -567,7 +557,7 @@ class OpenAPNavEnv(gym.Env):
                     state if not is_internal else None)
 
     def _calculate_xte(self):
-        """Calcule la XTE aka. Cross-Track Error (déviation par rapport au plan de vol)"""
+        """Calculates Cross-Track Error (XTE) aka lateral deviation from the flight plan."""
         if self.current_waypoint_idx >= len(self.nominal_route):
             return 0.0
 
@@ -585,7 +575,7 @@ class OpenAPNavEnv(gym.Env):
         )
 
     def _calculate_atd(self):
-        """Calcule la distance Along-Track (ATD) par rapport au segment actuel."""
+        """Calculates Along-Track Distance (ATD) relative to the current segment."""
         if self.current_waypoint_idx >= len(self.nominal_route) or self.current_waypoint_idx == 0:
             return 0.0
 
@@ -600,8 +590,8 @@ class OpenAPNavEnv(gym.Env):
 
     def _get_total_remaining_dist(self):
         """
-        Calcule la distance totale restante le long de la route programmée.
-        Distance = Distance (avion -> waypoint actuel) + Somme des legs restants.
+        Calculates total remaining distance along the programmed route.
+        Distance = Distance (aircraft -> current waypoint) + Sum of remaining legs.
         """
         if self.current_waypoint_idx >= len(self.nominal_route):
             return 0.0

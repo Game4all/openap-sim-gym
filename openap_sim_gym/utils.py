@@ -2,11 +2,11 @@ import math
 
 
 class GeoUtils:
-    R_EARTH_NM = 3440.06479  # Radius of Earth in Nautical Miles
+    R_EARTH_NM = 3440.06479  # Earth radius in nautical miles
 
     @staticmethod
     def haversine_dist(lat1, lon1, lat2, lon2):
-        """Returns distance in NM between two points."""
+        """Calculates the distance in NM between two points."""
         phi1, phi2 = math.radians(lat1), math.radians(lat2)
         dphi = math.radians(lat2 - lat1)
         dlambda = math.radians(lon2 - lon1)
@@ -18,7 +18,7 @@ class GeoUtils:
 
     @staticmethod
     def bearing(lat1, lon1, lat2, lon2):
-        """Returns initial bearing in degrees (0-360) from pt1 to pt2."""
+        """Calculates the initial bearing in degrees (0-360) from point 1 to point 2."""
         phi1, phi2 = math.radians(lat1), math.radians(lat2)
         dlambda = math.radians(lon2 - lon1)
 
@@ -30,9 +30,7 @@ class GeoUtils:
 
     @staticmethod
     def cross_track_error(lat_pos, lon_pos, lat_start, lon_start, lat_end, lon_end):
-        """
-        Returns Cross Track Error (NM). Positive = Right of track, Negative = Left.
-        """
+        """Calculates Cross Track Error (XTE) in NM. Positive = right of track, Negative = left of track."""
         dist_13 = GeoUtils.haversine_dist(
             lat_start, lon_start, lat_pos, lon_pos)
         brg_13 = GeoUtils.bearing(lat_start, lon_start, lat_pos, lon_pos)
@@ -43,9 +41,7 @@ class GeoUtils:
 
     @staticmethod
     def along_track_distance(lat_pos, lon_pos, lat_start, lon_start, lat_end, lon_end):
-        """
-        Returns Along Track Distance (NM) from start to the projection of pos on segment.
-        """
+        """Calculates Along Track Distance (ATD) in NM from the start to the position's projection on the segment."""
         dist_13 = GeoUtils.haversine_dist(
             lat_start, lon_start, lat_pos, lon_pos)
         brg_13 = GeoUtils.bearing(lat_start, lon_start, lat_pos, lon_pos)

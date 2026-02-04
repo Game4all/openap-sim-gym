@@ -1,7 +1,7 @@
 """
-Script de benchmarking Monte Carlo (2000 runs)
-Baseline (AP heading magnétique) vs Modèle PPO
-Même route et même vent pour chaque paire de runs
+Monte Carlo benchmarking script (2000 runs)
+Baseline (Magnetic heading AP) vs PPO Model
+Same route and wind for each pair of runs
 """
 
 import numpy as np
@@ -10,11 +10,11 @@ from rich import box
 from rich.table import Table
 from tqdm.rich import tqdm
 from stable_baselines3 import PPO
-from xp_sim_gym import OpenAPNavEnv, CriticComparisonWrapper, EnvironmentConfig, PlaneConfig,  RouteStageGenerator, BenchmarkRouteGenerator
+from openap_sim_gym import OpenAPNavEnv, CriticComparisonWrapper, EnvironmentConfig, PlaneConfig,  RouteStageGenerator, BenchmarkRouteGenerator
 
 
 def run_simulation(env, model=None):
-    """Simule le comportement du modèle de l'AP en heading magnétique (avec le modèle de déviation résiduelle activé ou non) sur la route spécifiée"""
+    """Simulates the behavior of the AP model (with or without residual deviation correction) on the specified route."""
     obs, info = env.reset()
     done = False
 
@@ -61,7 +61,7 @@ def run_simulation(env, model=None):
     }
 
 
-# Helpers statistiques
+# Statistical helpers
 
 def aggregate_stats(stats_list):
     keys = ["fuel", "distance", "time", "fuel_per_nm"]
@@ -137,7 +137,7 @@ def main():
         env_model = OpenAPNavEnv(plane_config, env_config)
         env_model.set_nominal_route(route)
         env_model.set_wind_config(wind_streams)
-        env_model = CriticComparisonWrapper(env_model, model, 0.3, gamma=0.92)
+        env_model = CriticComparisonWrapper(env_model, model, 0., gamma=0.99)
         model_stats = run_simulation(env_model, model=model)
 
         baseline_results.append(baseline_stats)
@@ -161,15 +161,15 @@ def main():
 
     console = Console()
 
-    console.rule("[bold cyan]Benchmark AP vs Modèle PPO [/bold cyan]")
+    console.rule("[bold cyan]Benchmark: AP vs PPO Model[/bold cyan]")
     console.print(f"[dim]({N_RUNS} paired runs)[/dim]\n")
 
-    # Calculer le nombre de fois où le modèle fait mieux que la baseline (fuel_per_nm)
+    # Count wins (lower fuel_per_nm is better)
     wins = sum(1 for m, b in zip(model_results, baseline_results)
                if m["fuel_per_nm"] < b["fuel_per_nm"])
     win_rate = (wins / N_RUNS) * 100
     console.print(
-        f"Modèle PPO a surperformé la baseline [bold green]{wins}/{N_RUNS}[/bold green] fois ([bold]{win_rate:.1f}%[/bold])\n")
+        f"PPO model outperformed baseline [bold green]{wins}/{N_RUNS}[/bold green] times ([bold]{win_rate:.1f}%[/bold])\n")
 
     table = Table(
         show_header=True,
@@ -179,10 +179,10 @@ def main():
     )
 
     table.add_column("Metric", justify="left", no_wrap=True)
-    table.add_column("Δ Gain Rel Minimum", justify="right")
-    table.add_column("Δ Gain Rel Moyen", justify="right")
-    table.add_column("Δ Gain Rel Médian", justify="right")
-    table.add_column("Δ Gain Rel Maximum", justify="right")
+    table.add_column("Min Rel Gain Δ", justify="right")
+    table.add_column("Avg Rel Gain Δ", justify="right")
+    table.add_column("Median Rel Gain Δ", justify="right")
+    table.add_column("Max Rel Gain Δ", justify="right")
 
     def pct(val: float) -> str:
         color = "green" if val >= 0 else "red"

@@ -1,5 +1,5 @@
 """
-Script pour entraîner le modèle PPO de déviation avec tout le cursus d'apprentissage.
+Script to train the PPO deviation model using the full curriculum.
 """
 import os
 import gymnasium as gym
@@ -9,32 +9,32 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from pydantic import BaseModel, Field
 from rich import print as rprint, print_json
-from xp_sim_gym.openap_env import OpenAPNavEnv, PlaneConfig, EnvironmentConfig
-from xp_sim_gym import CurriculumPretrainingEnv
+from openap_sim_gym import OpenAPNavEnv, PlaneConfig, EnvironmentConfig
+from openap_sim_gym import CurriculumPretrainingEnv
 
 
 class CurriculumTrainingConfig(BaseModel):
     """
-    Configuration du curriculum d'entraînement
+    Curriculum training configuration.
     """
     aircraft_type: str = Field(
-        description="Nom de l'engin avec lequel s'entraîner.")
+        description="Aircraft type for training.")
     total_steps: int = Field(
-        description="Durée totale de l'entraînement en étapes"
+        description="Total training duration in steps"
     )
     base_stage: int = Field(
-        description="Phase du curriculum sur laquelle commencer l'entraînement")
+        description="Curriculum stage to start training from")
     thresholds: dict[int, float] = Field(
-        description="Un dict (stage -> seuil relatif, 0-1) pour configurer la durée de chaque phase du curriculum"
+        description="A dict (stage -> relative threshold, 0-1) to configure each stage duration"
     )
     keep_env_config_prob: float = Field(
         default=0.1,
-        description="Probabilité (0.0 à 1.0) de garder la même route et le même vent lors d'un reset."
+        description="Probability (0.0 to 1.0) of keeping the same route/wind on reset."
     )
 
     @staticmethod
     def default_config():
-        """Retourne la config par défaut"""
+        """Returns the default configuration"""
         return CurriculumTrainingConfig(
             total_steps=1_000_000,
             thresholds={
@@ -51,8 +51,7 @@ class CurriculumTrainingConfig(BaseModel):
 
 class CurriculumTrainingCallback(BaseCallback):
     """
-    Callback d'entraînement pour changer le stage de pré-entraînement
-    en fonction de l'avancement relatif du training.
+    Training callback to change the pre-training stage based on relative progress.
     """
 
     def __init__(self, config: CurriculumTrainingConfig, verbose: int = 0):
@@ -86,7 +85,7 @@ class CurriculumTrainingCallback(BaseCallback):
                 if hasattr(self.training_env, "set_pretraining_stage"):
                     self.training_env.set_pretraining_stage(self.stage)
 
-        # logger la phase du curriculum d'entraînement pour aider a debug
+        # Log current stage for debugging
         self.logger.record("curriculum/current_stage", self.stage)
         self.logger.record("curriculum/reuse_count",
                            self.training_env.get_attr("reuse_count")[0])
@@ -102,19 +101,19 @@ class CurriculumTrainingCallback(BaseCallback):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Script d'entraînement du modèle de déviation avec apprentissage par renforcement"
+        description="Deviation model training script using Reinforcement Learning"
     )
     parser.add_argument("--total-timesteps", type=int,
-                        help="Override du nombre d'étapes total pour l'entraînement")
+                        help="Override total training steps")
     parser.add_argument("--n-steps", type=int,
-                        help="Override du nombre d'étapes par rollout du PPO (PPO n_steps)")
+                        help="Override PPO rollouts steps (PPO n_steps)")
     parser.add_argument("--batch-size", type=int, default=64,
-                        help="Batch size pour l'entraînement")
+                        help="Batch size for training")
     parser.add_argument(
         "--config",
         type=str,
         default="curriculum_config.json",
-        help="Utilise la config de curriculum du fichier passé en paramètres pour l'entraînement"
+        help="Use curriculum config from the specified JSON file"
     )
     args = parser.parse_args()
 
@@ -124,7 +123,7 @@ def main():
                 f.read())
     else:
         rprint(
-            f"[yellow]La configuration {args.config} n'existe pas. [bold]Création de la config par défaut.[/yellow][/bold]")
+            f"[yellow]Configuration {args.config} not found. [bold]Creating default config.[/yellow][/bold]")
         curriculum_config = CurriculumTrainingConfig.default_config()
         with open(args.config, "w") as f:
             f.write(curriculum_config.model_dump_json(indent=4))
@@ -133,11 +132,11 @@ def main():
     if args.total_timesteps:
         curriculum_config.total_steps = args.total_timesteps
 
-    # Setup du dossier de log pour les run d'entraînement
+    # Setup log directory for training runs
     log_dir = "logs"
     os.makedirs(log_dir, exist_ok=True)
 
-    # Setup de l'environement
+    # Setup environment
     plane_config = PlaneConfig(aircraft_type=curriculum_config.aircraft_type)
     env_config = EnvironmentConfig()
     env = CurriculumPretrainingEnv(
@@ -148,7 +147,7 @@ def main():
         reuse_stages=[4, 5, 6]
     )
 
-    # Initialization du modèle de PPO
+    # Initialize PPO model
     model = PPO(
         "MlpPolicy",
         env,
@@ -168,7 +167,7 @@ def main():
         verbose=1,
     )
 
-    rprint("[green]Début de l'entraînement avec la configuration suivante[/green]")
+    rprint("[green]Starting training with the following configuration:[/green]")
     print_json(curriculum_config.model_dump_json(indent=4))
 
     model.learn(
@@ -180,7 +179,7 @@ def main():
     save_path = "ppo_flight_deviation_pretrained"
     model.save(save_path)
     rprint(
-        f"[green]Fin de l'entraînement. [bold]Model sauvegardé dans {save_path}[/bold][/green]")
+        f"[green]Training finished. [bold]Model saved in {save_path}[/bold][/green]")
 
 
 if __name__ == "__main__":

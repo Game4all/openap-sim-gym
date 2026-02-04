@@ -1,5 +1,5 @@
 """
-Script de benchmarking visuel sur une trajectoire du baseline (FMS Heading Magnétique) et du modèle (FMS + offset de trajectoire)
+Benchmark AP vs Model on a single visualization
 """
 
 import math
@@ -8,8 +8,8 @@ import argparse
 import numpy as np
 import gymnasium as gym
 from stable_baselines3 import PPO
-from xp_sim_gym import CriticComparisonWrapper, OpenAPNavEnv, EnvironmentConfig, PlaneConfig, RouteStageGenerator, BenchmarkRouteGenerator
-from xp_sim_gym.viz_wrapper import MultiEnvViz
+from openap_sim_gym import CriticComparisonWrapper, OpenAPNavEnv, EnvironmentConfig, PlaneConfig, RouteStageGenerator, BenchmarkRouteGenerator
+from openap_sim_gym.viz_wrapper import MultiEnvViz
 
 
 def main():
@@ -51,7 +51,7 @@ def main():
     except Exception as e:
         print(f"Error loading model: {e}")
 
-    env_model = CriticComparisonWrapper(env_model, model, 0.99)
+    env_model = CriticComparisonWrapper(env_model, model, gamma=0.99)
 
     # 4. Setup Multi-Env Visualization
     viz = MultiEnvViz(

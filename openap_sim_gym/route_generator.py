@@ -7,6 +7,9 @@ from .utils import GeoUtils
 
 
 class RouteStageGenerator:
+    """
+    Generates flight plans and corresponding winds based on the pre-training stage.
+    """
     def __init__(self, config: PlaneConfig, seed: Optional[int] = None):
         self.config = config
         self.seed = seed
@@ -16,12 +19,11 @@ class RouteStageGenerator:
 
     def generate(self, stage: int) -> Tuple[List[Dict], List[WindStreamConfig]]:
         """
-        Generates a route and corresponding wind streams based on the difficulty stage.
+        Generates a flight plan and corresponding winds based on the pre-training stage.
         """
 
         route = self.generate_route(stage)
 
-        # 2. Determine start params for wind generation
         if route:
             start_lat = route[0].get('lat', self.config.initial_lat)
             start_lon = route[0].get('lon', self.config.initial_lon)
@@ -29,14 +31,12 @@ class RouteStageGenerator:
             start_lat = self.config.initial_lat
             start_lon = self.config.initial_lon
 
-        # 3. Generate Wind
         wind_streams = self.generate_wind(stage, route, start_lat, start_lon)
 
         return route, wind_streams
 
     def generate_route(self, stage: int) -> List[Dict]:
-        """Génère un plan de vol aléatoire en fonction du stage de prétraining"""
-        # Base location from config
+        """Generates a random flight plan based on the pre-training stage."""
         lat_0, lon_0 = self.config.initial_lat, self.config.initial_lon
         alt_0 = self.config.initial_alt_m
 
@@ -157,7 +157,7 @@ class RouteStageGenerator:
 
         return route
     def generate_wind(self, stage: int, route: List[Dict], start_lat: float, start_lon: float) -> List[WindStreamConfig]:
-        """Initialize the wind streams."""
+        """Generates winds corresponding to the pre-training stage."""
         wind_streams = []
 
         if stage == 1:
@@ -250,6 +250,9 @@ class RouteStageGenerator:
 
 
 class BenchmarkRouteGenerator:
+    """
+    Generates flight plans and corresponding winds for benchmarking.
+    """ 
     def __init__(self, config: PlaneConfig, seed: Optional[int] = None):
         self.config = config
         self.seed = seed
@@ -259,11 +262,10 @@ class BenchmarkRouteGenerator:
 
     def generate(self) -> Tuple[List[Dict], List[WindStreamConfig]]:
         """
-        Generates a long route and specialized wind streams for benchmarking.
+        Generates a flight plan and corresponding winds for benchmarking.
         """
         route = self.generate_route()
 
-        # Determine start params for wind generation
         if route:
             start_lat = route[0].get('lat', self.config.initial_lat)
             start_lon = route[0].get('lon', self.config.initial_lon)
@@ -276,7 +278,7 @@ class BenchmarkRouteGenerator:
         return route, wind_streams
 
     def generate_route(self) -> List[Dict]:
-        """Génère un plan de vol long (équivalent Stage 5)"""
+        """Generates a long flight plan (equivalent to Stage 5)."""
         lat_0, lon_0 = self.config.initial_lat, self.config.initial_lon
         alt_0 = self.config.initial_alt_m
 
@@ -309,7 +311,7 @@ class BenchmarkRouteGenerator:
         return route
 
     def generate_wind(self, route: List[Dict], start_lat: float, start_lon: float) -> List[WindStreamConfig]:
-        """Initialize specialized wind streams."""
+        """Generates winds corresponding to the benchmark route."""
         wind_streams = []
         num_streams = np.random.randint(4, 8)
         

@@ -4,11 +4,9 @@ import pygame
 import math
 import time
 
-from xp_sim_gym.constants import KTS_TO_M_S
+from openap_sim_gym.constants import KTS_TO_M_S
 
-
-
-class BaseViz:
+class VisualizationBase:
     """
     Base class for 2D visualization using Pygame.
     Contains shared logic for rendering the map, grid, wind field, and route.
@@ -130,21 +128,19 @@ class BaseViz:
                     
                     if is_delta:
                         if dur_val > 0.01:
-                            final_color = (255, 100, 100) # Red-ish for gain
+                            final_color = (255, 100, 100) # Red-ish for loss (more time)
                             text_content = f"+{dur_val:.1f}m"
                         elif dur_val < -0.01:
-                            final_color = (100, 255, 100) # Green-ish for loss
+                            final_color = (100, 255, 100) # Green-ish for gain (less time)
                             text_content = f"{dur_val:.1f}m"
                         else:
                             final_color = (200, 200, 200)
 
                     dur_text = self.small_font.render(text_content, True, final_color)
-                    # Create a semi-transparent surface for the text
                     dur_text.set_alpha(180) 
                     self.screen.blit(dur_text, (p[0] + label_offset[0], p[1] + label_offset[1]))
 
     def _draw_wind_field(self, env):
-        # Use get_wrapper_attr to check and access wind data across nested wrappers
         try:
             wind_streams = env.get_wrapper_attr('wind_streams')
             alt_m = env.get_wrapper_attr('alt_m')
@@ -177,7 +173,6 @@ class BaseViz:
                         pygame.draw.circle(self.screen, color, start_p, 3)
 
     def _iter_wrappers(self, env):
-        """Helper to iterate through nested wrappers."""
         yield env
         while hasattr(env, 'env'):
             env = env.env
@@ -202,14 +197,14 @@ class BaseViz:
             pygame.draw.lines(self.screen, color, False, traj_points, 1)
 
 
-class OpenAPVizWrapper(gym.Wrapper, BaseViz):
+class OpenAPVizWrapper(gym.Wrapper, VisualizationBase):
     """
     Gymnasium wrapper for 2D visualization of a single OpenAPNavEnv.
     """
 
     def __init__(self, env, width=800, height=800, padding=100):
         gym.Wrapper.__init__(self, env)
-        BaseViz.__init__(self, width, height, padding)
+        VisualizationBase.__init__(self, width, height, padding)
 
         self.last_action_duration = 0.0
         self.total_duration_min = 0.0
@@ -262,16 +257,15 @@ class OpenAPVizWrapper(gym.Wrapper, BaseViz):
         self._draw_wind_field(self.env)
         self._draw_plane(self.env.get_wrapper_attr('lat'), self.env.get_wrapper_attr('lon'), self.env.get_wrapper_attr('heading_mag'))
 
-        # Info text
         info_lines = [
-            f"Cap (HDG): {int(self.env.get_wrapper_attr('heading_mag'))}°",
-            f"Ecart Lat (XTE): {self.env.get_wrapper_attr('_calculate_xte')():.2f} NM",
-            f"Dist Parcours (ATE): {self.env.get_wrapper_attr('_calculate_atd')():.2f} NM",
-            f"Durée Totale: {self.total_duration_min:.1f} min",
+            f"Heading (HDG): {int(self.env.get_wrapper_attr('heading_mag'))}°",
+            f"Cross-Track Error (XTE): {self.env.get_wrapper_attr('_calculate_xte')():.2f} NM",
+            f"Along-Track Distance (ATE): {self.env.get_wrapper_attr('_calculate_atd')():.2f} NM",
+            f"Total Duration: {self.total_duration_min:.1f} min",
             f"Segments (Last 3): {' / '.join([f'{d:.1f}' for d in self.last_segment_durations])}",
-            f"Carburant: {int(self.env.get_wrapper_attr('current_fuel_kg'))} kg",
-            f"Vitesse TAS: {int(self.env.get_wrapper_attr('tas_ms') / KTS_TO_M_S)} kts",
-            f"Vitesse GS: {int(self.env.get_wrapper_attr('gs_ms') / KTS_TO_M_S)} kts",
+            f"Fuel: {int(self.env.get_wrapper_attr('current_fuel_kg'))} kg",
+            f"TAS: {int(self.env.get_wrapper_attr('tas_ms') / KTS_TO_M_S)} kts",
+            f"GS: {int(self.env.get_wrapper_attr('gs_ms') / KTS_TO_M_S)} kts",
         ]
         for i, line in enumerate(info_lines):
             text = self.font.render(line, True, (255, 255, 255))
@@ -286,7 +280,7 @@ class OpenAPVizWrapper(gym.Wrapper, BaseViz):
             self.screen = None
 
 
-class MultiEnvViz(BaseViz):
+class MultiEnvViz(VisualizationBase):
     """
     Visualization for multiple environments at once.
     Not a wrapper, but takes a list of environments and their trackers.

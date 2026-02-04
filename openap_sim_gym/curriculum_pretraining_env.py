@@ -9,8 +9,8 @@ import tensorboard
 
 class CurriculumPretrainingEnv(gym.Wrapper):
     """
-    Un environnement gymnasium qui entourne un autre environnement gymnasium.
-    Cet environnement contient la logique de pré-entraînement avec un curriculum d'apprentissage qui vise à permettre à l'agent de bien commencer son apprentissage.
+    An environment that wraps another environment.
+    This environment contains the logic for pre-training with a learning curriculum designed to help the agent start learning effectively.
     """
 
     def __init__(self, env: OpenAPNavEnv, plane_config: PlaneConfig, seed: Optional[int] = None, prob_keep_config: float = 0.0, max_reuse_count: int = 2, reuse_stages: list[int] = [4, 5, 6]):

@@ -964,7 +964,7 @@ wheels = [
 ]
 
 [[package]]
-name = "pfe-traj-opt"
+name = "pfe-openap-sim-gym"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

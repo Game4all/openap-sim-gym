@@ -6,8 +6,8 @@ from stable_baselines3 import PPO
 
 class CriticComparisonWrapper(gym.Wrapper):
     """
-    Un wrapper autour d'un environnement qui compare les avantages relatifs des actions proposées par le modèle PPO et par le FMS.
-    Un seuil contrôle l'usage de l'action proposée par le modèle en comparant les avantages relatifs des deux actions au seuil défini.
+    A wrapper around an environment that compares the relative advantages of actions proposed by the PPO model and the FMS.
+    A threshold controls the use of the action proposed by the model by comparing the relative advantages of the two actions to the defined threshold.
 
     """
 
